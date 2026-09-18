@@ -1,0 +1,64 @@
+# Release pipeline for the nodebeat-agent.
+#
+# Local validation:  `goreleaser check` and `goreleaser build --snapshot --clean`
+# Real releases run in CI from a version tag:
+#   git tag v0.1.0 && git push origin v0.1.0
+# which needs GITHUB_TOKEN. Signing is keyless (Sigstore Fulcio/Rekor via the
+# CI job's OIDC identity); SLSA provenance comes from
+# slsa-framework/slsa-github-generator once CI exists.
+version: 2
+
+project_name: nodebeat-agent
+
+builds:
+  - id: nodebeat-agent
+    main: ./cmd/nodebeat-agent
+    binary: nodebeat-agent
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/nodebeat/agent/internal/version.Version={{.Version}}
+    env:
+      - CGO_ENABLED=0
+  - id: nodebeat-onboard
+    main: ./cmd/nodebeat-onboard
+    binary: nodebeat-onboard
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/nodebeat/agent/internal/version.Version={{.Version}}
+    env:
+      - CGO_ENABLED=0
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - packaging/**/*
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  algorithm: sha256
+
+sboms:
+  - id: default
+    artifacts: archive
+
+signs:
+  - id: checksums
+    cmd: cosign
+    args:
+      - sign-blob
+      - "--bundle=${signature}"
+      - "--yes"
+      - "${artifact}"
+    artifacts: checksum

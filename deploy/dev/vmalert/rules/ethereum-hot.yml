@@ -1,0 +1,108 @@
+# Hot path: consensus-critical signals, evaluated every 5s, no duration
+# guards. Pages via the Alertmanager `paging` route (group_wait: 0s).
+#
+# Metric sources (all verified against ethereum-metrics-exporter v0.29.2,
+# see deploy/devnet/ethereum/samples/):
+#   eth_exe_* - execution layer state via JSON-RPC
+#   eth_con_* - consensus layer state via Beacon API
+#
+# Per-validator duty alerts (missed attestations, effectiveness) are NOT here
+# yet: this exporter version has no validator module and the devnet monitors
+# no validators. Head-staleness and sync flags are the paging signals until
+# monitored validators exist (see samples README).
+groups:
+  - name: ethereum-hot
+    interval: 5s
+    rules:
+      - alert: EthereumCLSyncing
+        expr: eth_con_sync_is_syncing == 1
+        for: 0s
+        labels:
+          severity: critical
+          chain: ethereum
+        annotations:
+          summary: "Consensus client is syncing ({{ $labels.instance }})"
+          description: >-
+            Beacon node reports syncing=1. A syncing validator cannot attest
+            or propose. Check peers, check EL health, look for stalls.
+
+      - alert: EthereumELSyncing
+        expr: eth_exe_sync_is_syncing == 1
+        for: 0s
+        labels:
+          severity: critical
+          chain: ethereum
+        annotations:
+          summary: "Execution client is syncing ({{ $labels.instance }})"
+          description: >-
+            EL reports syncing=1, so the beacon node cannot build valid
+            payloads. Proposals from this node will fail until EL catches up.
+
+      - alert: EthereumConsensusUnhealthy
+        expr: eth_con_health_up == 0
+        for: 0s
+        labels:
+          severity: critical
+          chain: ethereum
+        annotations:
+          summary: "Exporter cannot reach the beacon node ({{ $labels.instance }})"
+          description: >-
+            ethereum-metrics-exporter health check for the consensus endpoint
+            failed. Beacon API down, wrong URL, or fast-failing network path
+            between exporter and CL. NOTE: a hung (not refused) endpoint
+            keeps health_up=1; hangs are caught by the head-stall rules.
+
+      # Detection budget ≈ window (60s) + eval (5s) + dispatch: ~70s
+      # fault-to-page, measured live 2026-09-16. Instantaneous flags below
+      # (syncing, health) page faster; true <10s paging needs duty events
+      # (missed attestations), which require monitored validators.
+      - alert: EthereumCLHeadStalled
+        expr: increase(eth_con_sync_head_slot[60s]) == 0
+        for: 0s
+        labels:
+          severity: critical
+          chain: ethereum
+        annotations:
+          summary: "Beacon head slot not advancing ({{ $labels.instance }})"
+          description: >-
+            No new head slot in 60s. Chain stuck locally (peers lost, EL
+            dead) or stalled globally. Value held at {{ $value }} new
+            slots/60s.
+
+      - alert: EthereumELHeadStalled
+        expr: increase(eth_exe_block_most_recent_number[60s]) == 0
+        for: 0s
+        labels:
+          severity: critical
+          chain: ethereum
+        annotations:
+          summary: "Execution head block not advancing ({{ $labels.instance }})"
+          description: >-
+            No new EL block in 60s. Execution client stuck, out of peers, or
+            out of disk. Check EL logs and peer count.
+
+      - alert: EthereumSyncDistanceHigh
+        expr: eth_con_sync_distance > 8
+        for: 0s
+        labels:
+          severity: critical
+          chain: ethereum
+        annotations:
+          summary: "Beacon node {{ $value }} slots behind head ({{ $labels.instance }})"
+          description: >-
+            Sync distance above 8 slots with no duration guard: on a live
+            network this means the node already missed duties. If it just
+            restarted, expect auto-resolve as it catches up.
+
+      - alert: EthereumTelemetryStale
+        expr: time() - timestamp(eth_con_sync_head_slot) > 180
+        for: 0s
+        labels:
+          severity: critical
+          chain: ethereum
+        annotations:
+          summary: "No chain telemetry for 3m ({{ $labels.instance }})"
+          description: >-
+            Backstop for a dead exporter, dead agent, or broken remote-write:
+            nothing evaluable for this node. Cannot distinguish stuck chain
+            from blind monitoring without reference sources (Increment 2).

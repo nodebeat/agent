@@ -1,0 +1,208 @@
+{
+  "uid": "nodebeat-fleet",
+  "title": "NodeBeat Fleet",
+  "tags": ["nodebeat"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "templating": {
+    "list": [
+      {
+        "name": "instance",
+        "label": "Instance",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+        "definition": "label_values(eth_exe_block_most_recent_number, instance)",
+        "includeAll": true,
+        "multi": true,
+        "refresh": 1,
+        "sort": 1,
+        "current": {}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Fleet",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "id": 2,
+      "title": "Nodes reporting",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "targets": [
+        { "expr": "count(count by (instance) (eth_exe_block_most_recent_number))", "refId": "A" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Alerting",
+      "type": "text",
+      "gridPos": { "h": 8, "w": 12, "x": 6, "y": 1 },
+      "options": {
+        "mode": "markdown",
+        "content": "Grafana is dashboards-only and NOT in the alert path.\n\nFiring alerts live in Alertmanager and route to receivers:\n\n- Critical (paging): `severity=\"critical\"`, no group wait\n- Standard: grouped, 30s wait\n\nDev receivers land in the mock sink. Check Alertmanager directly for live state."
+      }
+    },
+    {
+      "id": 4,
+      "title": "Chain head (slot)",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "targets": [
+        { "expr": "max(eth_con_sync_head_slot)", "refId": "A" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "EL head (block)",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 5 },
+      "targets": [
+        { "expr": "max(eth_exe_block_most_recent_number)", "refId": "A" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Chain",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }
+    },
+    {
+      "id": 7,
+      "title": "Head slot / EL block",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 10 },
+      "targets": [
+        { "expr": "eth_con_sync_head_slot{instance=~\"$instance\"}", "refId": "A", "legendFormat": "head slot {{instance}}" },
+        { "expr": "eth_exe_block_most_recent_number{instance=~\"$instance\"}", "refId": "B", "legendFormat": "EL block {{instance}}" }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Sync %",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 10 },
+      "targets": [
+        { "expr": "eth_con_sync_percentage{instance=~\"$instance\"}", "refId": "A", "legendFormat": "CL {{instance}}" },
+        { "expr": "eth_exe_sync_percentage{instance=~\"$instance\"}", "refId": "B", "legendFormat": "EL {{instance}}" }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Peers",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 10 },
+      "targets": [
+        { "expr": "eth_exe_net_peer_count{instance=~\"$instance\"}", "refId": "A", "legendFormat": "EL {{instance}}" },
+        { "expr": "sum by (instance) (eth_con_peers{instance=~\"$instance\"})", "refId": "B", "legendFormat": "CL {{instance}}" }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Sync distance (slots)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 16 },
+      "targets": [
+        { "expr": "eth_con_sync_distance{instance=~\"$instance\"}", "refId": "A", "legendFormat": "{{instance}}" }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Reorgs (1h)",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 16 },
+      "targets": [
+        { "expr": "sum by (instance) (increase(eth_con_reorg_count{instance=~\"$instance\"}[1h]))", "refId": "A" }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Fork",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 16 },
+      "targets": [
+        { "expr": "eth_con_fork_current{instance=~\"$instance\"}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Host / RPC",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 }
+    },
+    {
+      "id": 14,
+      "title": "CPU non-idle",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 23 },
+      "targets": [
+        { "expr": "avg by (instance) (rate(node_cpu_seconds_total{instance=~\"$instance\",mode!=\"idle\"}[5m]))", "refId": "A", "legendFormat": "{{instance}}" }
+      ]
+    },
+    {
+      "id": 15,
+      "title": "Memory available %",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 23 },
+      "targets": [
+        { "expr": "100 * node_memory_MemAvailable_bytes{instance=~\"$instance\"} / node_memory_MemTotal_bytes{instance=~\"$instance\"}", "refId": "A", "legendFormat": "{{instance}}" }
+      ]
+    },
+    {
+      "id": 16,
+      "title": "Root disk free %",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 23 },
+      "targets": [
+        { "expr": "100 * node_filesystem_avail_bytes{instance=~\"$instance\",mountpoint=\"/\"} / node_filesystem_size_bytes{instance=~\"$instance\",mountpoint=\"/\"}", "refId": "A", "legendFormat": "{{instance}}" }
+      ]
+    },
+    {
+      "id": 17,
+      "title": "Network I/O",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 29 },
+      "targets": [
+        { "expr": "sum by (instance) (rate(node_network_receive_bytes_total{instance=~\"$instance\",device!=\"lo\"}[5m]))", "refId": "A", "legendFormat": "rx {{instance}}" },
+        { "expr": "sum by (instance) (rate(node_network_transmit_bytes_total{instance=~\"$instance\",device!=\"lo\"}[5m]))", "refId": "B", "legendFormat": "tx {{instance}}" }
+      ]
+    },
+    {
+      "id": 18,
+      "title": "Gas price (gwei)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 29 },
+      "targets": [
+        { "expr": "eth_exe_gas_price_gwei{instance=~\"$instance\"}", "refId": "A", "legendFormat": "{{instance}}" }
+      ]
+    },
+    {
+      "id": 19,
+      "title": "Tx per head block",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 29 },
+      "targets": [
+        { "expr": "eth_exe_block_head_transactions_in_block{instance=~\"$instance\"}", "refId": "A", "legendFormat": "{{instance}}" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,69 @@
+# Standard path: host infrastructure from the embedded node_exporter
+# (Alloy job "prometheus.scrape.node", instance = detect target).
+# All rules carry duration guards; none page.
+groups:
+  - name: infra
+    interval: 30s
+    rules:
+      - alert: NodeDiskLow
+        expr: |
+          node_filesystem_avail_bytes{mountpoint="/"}
+            / node_filesystem_size_bytes{mountpoint="/"} < 0.15
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Root disk below 15% free ({{ $labels.instance }}, {{ $value }} fraction left)"
+          description: >-
+            A full disk mid-sync corrupts chaindata and forces a multi-day
+            resync. Free space now: prune, move chaindata, or grow the disk.
+
+      - alert: NodeMemoryLow
+        expr: |
+          node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Available memory below 10% ({{ $labels.instance }})"
+          description: >-
+            Sustained memory pressure risks OOM kills of EL/CL. Check for
+            leaks vs. legit growth (state, caches) before raising limits.
+
+      - alert: NodeCPUSaturated
+        expr: |
+          avg by (instance) (
+            rate(node_cpu_seconds_total{mode!="idle"}[5m])
+          ) > 0.9
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CPU saturated above 90% for 15m ({{ $labels.instance }})"
+          description: >-
+            The node is CPU-bound: attestations risk late inclusion and EL
+            falls behind under load. Identify the hot process (client,
+            compaction, backup) before adding cores.
+
+      - alert: NodeClockSkew
+        expr: abs(node_timex_offset_seconds) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "System clock offset {{ $value }}s ({{ $labels.instance }})"
+          description: >-
+            Clock drift breaks attestation timing and peer scoring. Fix NTP
+            (chrony/systemd-timesyncd) and check for VM clock issues.
+
+      - alert: NodeTelemetryStale
+        expr: time() - timestamp(node_uname_info) > 180
+        for: 0s
+        labels:
+          severity: warning
+        annotations:
+          summary: "No host telemetry for 3m ({{ $labels.instance }})"
+          description: >-
+            The node job stopped reporting: agent down, Alloy crashed, or
+            remote-write broken. Chain alerts for this host cannot be
+            trusted until telemetry resumes.

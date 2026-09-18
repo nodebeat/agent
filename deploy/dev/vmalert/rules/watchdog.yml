@@ -1,0 +1,14 @@
+# Always-firing signal proving rule evaluation is alive. Routed to the "null"
+# receiver so it never pages. Standard Prometheus "watchdog" pattern; useful for
+# catching a silently dead evaluator.
+groups:
+  - name: watchdog
+    interval: 30s
+    rules:
+      - alert: Watchdog
+        expr: vector(1)
+        for: 0s
+        labels:
+          severity: none
+        annotations:
+          summary: "Alerting pipeline is evaluating rules"

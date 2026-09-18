@@ -1,0 +1,18 @@
+/bin/
+/dist/
+*.test
+*.out
+
+# local agent state / secrets (never commit)
+/.nodebeat/
+*.log
+
+# env secrets
+.env
+.env.*
+!.env.example
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,17 @@
+# Synthetic alert used to verify the full path:
+#   POST metric -> VictoriaMetrics -> vmalert -> Alertmanager -> receiver
+# Fire it with `make test-alert`, resolve with `make clear-test-alert`.
+groups:
+  - name: pipeline-test
+    interval: 5s
+    rules:
+      - alert: NodebeatPipelineTest
+        expr: nodebeat_pipeline_test > 0
+        for: 0s
+        labels:
+          severity: critical
+          chain: test
+          instance: dev
+        annotations:
+          summary: "Alerting pipeline test signal is active"
+          description: "Synthetic metric nodebeat_pipeline_test > 0. Verifies scrape-free ingest, rule evaluation, routing and dispatch."

@@ -1,0 +1,41 @@
+[Unit]
+Description=NodeBeat monitoring agent (non-custodial, read-only)
+Documentation=https://github.com/nodebeat/agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nodebeat
+Group=nodebeat
+EnvironmentFile=/etc/nodebeat/agent.env
+ExecStart=/usr/local/bin/nodebeat-agent run \
+  --target ${NB_TARGET} \
+  --remote-write-url ${NB_REMOTE_WRITE_URL} \
+  --instance ${NB_INSTANCE} \
+  --state-dir /var/lib/nodebeat
+WorkingDirectory=/var/lib/nodebeat
+StateDirectory=nodebeat
+Restart=on-failure
+RestartSec=5s
+
+# Hardening: read-only host view, writes confined to the state dir, no
+# inbound ports (agent diagnostics, Alloy UI and exporter all bind
+# localhost high ports by default), no new privileges, no exec of anything
+# outside the supervised child binaries.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/nodebeat
+
+[Install]
+WantedBy=multi-user.target

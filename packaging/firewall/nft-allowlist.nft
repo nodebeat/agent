@@ -1,0 +1,22 @@
+#!/usr/sbin/nft -f
+# Sample egress allowlist for a NodeBeat-monitored host (nftables).
+# The agent only needs HTTPS to the ingest endpoint, plus DNS and NTP.
+# Replace $INGEST_IP with the ingest IPv4/IPv6 (resolve INGEST_HOST first),
+# review, then:  nft -f packaging/firewall/nft-allowlist.nft
+# NOT applied by install.sh.
+define INGEST_IP = 192.0.2.1
+
+table inet nodebeat {
+  chain output {
+    type filter hook output priority 0; policy drop;
+    ct state established,related accept
+    udp dport { 53, 123 } accept comment "DNS and NTP"
+    ip daddr $INGEST_IP tcp dport 443 accept comment "NodeBeat ingest"
+    # Chain clients need their P2P ports too; add per deployment.
+  }
+  chain input {
+    type filter hook input priority 0; policy drop;
+    ct state established,related accept
+    iifname "lo" accept
+  }
+}

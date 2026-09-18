@@ -1,0 +1,43 @@
+# Standard path: degraded-but-not-paging signals, evaluated every 30s with
+# duration guards to keep the false-positive page rate down. Routes to the
+# default (non-paging) receiver.
+groups:
+  - name: ethereum-standard
+    interval: 30s
+    rules:
+      - alert: EthereumELPeersLow
+        expr: eth_exe_net_peer_count == 0
+        for: 10m
+        labels:
+          severity: warning
+          chain: ethereum
+        annotations:
+          summary: "Execution client has no peers for 10m ({{ $labels.instance }})"
+          description: >-
+            Zero EL peers for 10 minutes: check P2P firewall (default 30303),
+            NAT/port-forwarding, and that the node clock is sane.
+
+      - alert: EthereumCLPeersLow
+        expr: sum by (instance) (eth_con_peers) == 0
+        for: 10m
+        labels:
+          severity: warning
+          chain: ethereum
+        annotations:
+          summary: "Consensus client has no peers for 10m ({{ $labels.instance }})"
+          description: >-
+            Zero libp2p peers for 10 minutes across all directions. Same
+            checklist as EL peers, plus CL discovery port (default 9000).
+
+      - alert: EthereumReorgDeep
+        expr: eth_con_reorg_depth > 2
+        for: 5m
+        labels:
+          severity: warning
+          chain: ethereum
+        annotations:
+          summary: "Deep reorg observed (depth {{ $value }}, {{ $labels.instance }})"
+          description: >-
+            A reorg deeper than 2 slots sustained 5m is unusual on mainnet
+            and worth a look (late blocks, MEV games, or an unhealthy head).
+            Frequent shallow reorgs are normal and do not page.
