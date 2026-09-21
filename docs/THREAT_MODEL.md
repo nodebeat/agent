@@ -14,8 +14,8 @@ The agent runs on customer validator/RPC hosts, next to keys. This document boun
 
 * Never reads validator keys, never holds custody in any form.
 * Never SSHes anywhere, never restarts validators or chain clients, never executes arbitrary commands on the host (it only supervises its own bundled children).
-* Never opens inbound ports beyond localhost diagnostics. No listener on the chain P2P or RPC interfaces.
-* Never runs as root in supported installs (systemd unit uses `NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`).
+* The agent binary itself opens no inbound ports beyond localhost diagnostics (`/metrics` + `/manifest` on 127.0.0.1:19090, Alloy UI on 127.0.0.1:12345). EXCEPTION: the supervised chain exporter has no bind-address flag and listens on `0.0.0.0:9090` (default) — this is an upstream limitation, not agent code. Restrict it with the host firewall (`packaging/firewall/`); it serves metrics only, no control interface. No listener on the chain P2P or RPC interfaces.
+* Never runs as root in supported installs (systemd unit uses `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp`).
 
 ## Worst-case compromise
 

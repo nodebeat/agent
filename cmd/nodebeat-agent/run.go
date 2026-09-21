@@ -28,6 +28,7 @@ func runRun(args []string) int {
 	stateDir := fs.String("state-dir", ".nodebeat", "agent state dir; the only path the agent writes to")
 	metricsAddr := fs.String("metrics-addr", "127.0.0.1:19090", "localhost diagnostics address for /metrics and /manifest")
 	alloyUIAddr := fs.String("alloy-ui-addr", "127.0.0.1:12345", "localhost address for the Alloy UI")
+	ingestToken := fs.String("ingest-token", "", "Bearer token for remote-write through the auth-enforcing ingest proxy (or NODEBEAT_INGEST_TOKEN env); empty = no auth block")
 	disableReporting := fs.Bool("disable-reporting", true, "pass --disable-reporting to Alloy (no usage telemetry)")
 	enrolled := fs.Bool("enrolled", false, "run from enrollment.json in --state-dir (created by `enroll`); fetches the server pipeline and polls it")
 	pollInterval := fs.Duration("poll-interval", 60*time.Second, "config poll interval in enrolled mode (also the server heartbeat)")
@@ -53,6 +54,7 @@ func runRun(args []string) int {
 		Target:           *target,
 		RemoteWriteURL:   *remoteWriteURL,
 		Instance:         *instance,
+		IngestToken:      firstNonEmpty(*ingestToken, os.Getenv("NODEBEAT_INGEST_TOKEN")),
 		ExporterBin:      *exporterBin,
 		AlloyBin:         *alloyBin,
 		ExporterPort:     *exporterPort,
@@ -180,4 +182,13 @@ func runEnrolled(logger *log.Logger, o enrolledOptions) int {
 		return 1
 	}
 	return 0
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }

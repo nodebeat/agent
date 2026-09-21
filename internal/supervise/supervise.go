@@ -82,14 +82,18 @@ type Stats struct {
 }
 
 type childState struct {
-	spec      Child
-	mu        sync.Mutex
-	cmd       *exec.Cmd
-	running   bool
-	restarts  int
-	failures  int
-	lastExit  string
-	lastStart time.Time
+	spec Child
+	mu   sync.Mutex
+	cmd  *exec.Cmd
+	// terminating is set while a terminate sequence owns the process.
+	// It makes concurrent stop requests (shutdown vs. runOnce ctx-cancel)
+	// collapse into one SIGTERM/SIGKILL sequence instead of double-sending.
+	terminating bool
+	running     bool
+	restarts    int
+	failures    int
+	lastExit    string
+	lastStart   time.Time
 }
 
 func (s *childState) stats() Stats {
@@ -203,9 +207,11 @@ func (s *Supervisor) keepAlive(ctx context.Context, c *childState) error {
 		c.mu.Lock()
 		c.restarts++
 		// A run that stayed up past StableAfter breaks the crash streak:
-		// only rapid consecutive failures count toward the budget.
+		// only rapid consecutive failures count toward the budget, and the
+		// backoff restarts from the base delay.
 		if time.Since(c.lastStart) >= s.opts.StableAfter {
 			c.failures = 0
+			delay = s.opts.RestartBase
 		}
 		c.failures++
 		failures := c.failures
@@ -259,11 +265,25 @@ func (s *Supervisor) runOnce(ctx context.Context, c *childState) error {
 	})
 
 	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	exited := make(chan struct{})
+	go func() {
+		done <- cmd.Wait()
+		close(exited)
+	}()
 
 	select {
 	case <-ctx.Done():
-		terminate(cmd, s.opts.StopGrace)
+		if claimed := s.claimTerminate(c, cmd); claimed != nil {
+			terminate(claimed, s.opts.StopGrace, func() bool {
+				select {
+				case <-exited:
+					return true
+				default:
+					return false
+				}
+			})
+			s.unclaimTerminate(c)
+		}
 		err := <-done
 		c.setExited(exitString(cmd, err))
 		return ctx.Err()
@@ -275,13 +295,42 @@ func (s *Supervisor) runOnce(ctx context.Context, c *childState) error {
 
 func (s *Supervisor) stopAll() {
 	for _, c := range s.children {
-		c.mu.Lock()
-		cmd := c.cmd
-		c.mu.Unlock()
-		if cmd != nil && cmd.Process != nil {
-			terminate(cmd, s.opts.StopGrace)
+		if claimed := s.claimTerminate(c, nil); claimed != nil {
+			terminate(claimed, s.opts.StopGrace, c.isStopped)
+			s.unclaimTerminate(c)
 		}
 	}
+}
+
+// claimTerminate marks the child terminating and returns its live process.
+// Passing cmd matches runOnce's own process (avoids acting on a process
+// started after a concurrent restart); nil matches whatever is live.
+// Returns nil when there is nothing to terminate.
+func (s *Supervisor) claimTerminate(c *childState, cmd *exec.Cmd) *exec.Cmd {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cmd == nil || c.cmd.Process == nil || c.terminating {
+		return nil
+	}
+	if cmd != nil && c.cmd != cmd {
+		return nil
+	}
+	c.terminating = true
+	return c.cmd
+}
+
+func (s *Supervisor) unclaimTerminate(c *childState) {
+	c.mu.Lock()
+	c.terminating = false
+	c.mu.Unlock()
+}
+
+// isStopped reports whether the child currently has no live process.
+// Guarded by the child mutex, so it is race-free unlike ProcessState polling.
+func (c *childState) isStopped() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cmd == nil || c.cmd.Process == nil || !c.running
 }
 
 func (c *childState) setRunning(cmd *exec.Cmd) {
@@ -289,6 +338,7 @@ func (c *childState) setRunning(cmd *exec.Cmd) {
 	defer c.mu.Unlock()
 	c.cmd = cmd
 	c.running = true
+	c.terminating = false
 	c.lastStart = time.Now()
 }
 
@@ -301,27 +351,28 @@ func (c *childState) setExited(s string) {
 }
 
 // terminate asks nicely (SIGTERM), then insists (SIGKILL) after grace.
-// It does not call Wait — the caller (runOnce) owns Wait on the exec.Cmd.
-func terminate(cmd *exec.Cmd, grace time.Duration) {
+// exited reports process death without touching cmd.ProcessState (which only
+// cmd.Wait may read — polling it from another goroutine is a data race).
+// terminate never calls Wait; the caller owns Wait on the exec.Cmd.
+func terminate(cmd *exec.Cmd, grace time.Duration, exited func() bool) {
 	if cmd.Process == nil {
 		return
 	}
 	_ = cmd.Process.Signal(syscall.SIGTERM)
-	// Poll ProcessState: runOnce's cmd.Wait() will set it. Polling avoids a
-	// second Wait (which would race with cmd.Wait).
 	deadline := time.Now().Add(grace)
 	for time.Now().Before(deadline) {
-		if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
+		if exited() {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
-		if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
-			return
-		}
-		// Check via Signal(0) whether process still exists.
-		if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
-			return
-		}
+	}
+	if exited() {
+		return
+	}
+	// Last check via Signal(0): the process may have died without the
+	// exited flag flipping yet (e.g. Wait not yet reaped).
+	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+		return
 	}
 	_ = cmd.Process.Kill()
 }

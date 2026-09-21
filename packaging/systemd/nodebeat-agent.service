@@ -19,10 +19,13 @@ StateDirectory=nodebeat
 Restart=on-failure
 RestartSec=5s
 
-# Hardening: read-only host view, writes confined to the state dir, no
-# inbound ports (agent diagnostics, Alloy UI and exporter all bind
-# localhost high ports by default), no new privileges, no exec of anything
-# outside the supervised child binaries.
+# Hardening: read-only host view, writes confined to the state dir, no new
+# privileges, no exec of anything outside the supervised child binaries.
+# Inbound listeners: agent diagnostics + Alloy UI bind localhost. EXCEPTION:
+# the supervised chain exporter (ethereum-metrics-exporter /
+# cosmos-validator-watcher) offers no bind-address flag and listens on
+# 0.0.0.0:<exporter-port> (default 9090) — restrict it with the host
+# firewall (see packaging/firewall/); the agent itself opens no inbound ports.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
@@ -35,6 +38,7 @@ LockPersonality=true
 RestrictSUIDSGID=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 SystemCallArchitectures=native
+UMask=0027
 ReadWritePaths=/var/lib/nodebeat
 
 [Install]

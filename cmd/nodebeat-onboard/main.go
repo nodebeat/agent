@@ -30,7 +30,7 @@ func main() {
 		checkNTP      = flag.Bool("check-ntp", true, "check NTP/time sync")
 		ntpThreshold  = flag.Float64("ntp-threshold", 1.0, "max NTP offset in seconds")
 		checkP2P      = flag.Bool("check-p2p", true, "check P2P ports")
-		checkStaticIP = flag.Bool("check-static-ip", true, "check static IP")
+		checkStaticIP = flag.Bool("check-static-ip", true, "check target resolves to a routable (non-loopback) IP")
 		chain         = flag.String("chain", "ethereum", "chain type: ethereum or cosmos")
 		verbose       = flag.Bool("v", false, "verbose output")
 		nonInteractive = flag.Bool("non-interactive", false, "exit with code 1 on any failure")
@@ -193,6 +193,12 @@ func doCheckP2PPorts(target string, params map[string]any) (bool, string) {
 }
 
 func doCheckStaticIP(target string, params map[string]any) (bool, string) {
+	// A DNS lookup cannot prove "static" (vs DHCP); this check verifies the
+	// target resolves to a routable IP. Loopback targets are skipped, not
+	// failed: a local run cannot assess the node's public reachability.
+	if target == "" || target == "127.0.0.1" || target == "localhost" || target == "::1" {
+		return true, "loopback target: public-IP check skipped (pass the node's public hostname to verify)"
+	}
 	ips, err := net.LookupIP(target)
 	if err != nil {
 		return false, fmt.Sprintf("DNS lookup failed: %v", err)
@@ -200,8 +206,8 @@ func doCheckStaticIP(target string, params map[string]any) (bool, string) {
 
 	for _, ip := range ips {
 		if ip.To4() != nil && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() {
-			return true, fmt.Sprintf("static IP detected: %s", ip.String())
+			return true, fmt.Sprintf("target resolves to routable IP: %s (static assignment not verifiable — confirm with your host/network provider)", ip.String())
 		}
 	}
-	return false, "no suitable static IP found (only loopback/link-local)"
+	return false, "no suitable routable IP found (only loopback/link-local)"
 }

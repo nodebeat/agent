@@ -83,7 +83,9 @@ groups:
 
       - alert: EthereumSyncDistanceHigh
         expr: eth_con_sync_distance > 8
-        for: 0s
+        # 1m guard: a restarting node legitimately spikes sync distance
+        # while catching up; a genuinely behind node stays behind.
+        for: 1m
         labels:
           severity: critical
           chain: ethereum

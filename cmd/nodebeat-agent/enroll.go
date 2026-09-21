@@ -21,7 +21,8 @@ import (
 func runEnroll(args []string) int {
 	fs := flag.NewFlagSet("enroll", flag.ContinueOnError)
 	controlPlane := fs.String("control-plane", "", "control-plane base URL, e.g. http://localhost:18080 (required)")
-	token := fs.String("token", "", "Clerk session JWT (Bearer auth)")
+	token := fs.String("token", "", "Clerk session JWT (Bearer auth; DEPRECATED: visible in the process list — prefer NODEBEAT_TOKEN env or --token-file)")
+	tokenFile := fs.String("token-file", "", "path to a file containing the Clerk session JWT (0600 recommended)")
 	orgID := fs.String("org-id", "", "org id for dev/self-hosted planes without Clerk (X-Org-ID header)")
 	name := fs.String("name", "", "node name (default: OS hostname)")
 	target := fs.String("target", "", "node hostname or IP to auto-detect (optional; skips probing when empty)")
@@ -37,9 +38,14 @@ func runEnroll(args []string) int {
 		fs.Usage()
 		return 2
 	}
-	if *token == "" && *orgID == "" {
-		fmt.Fprintln(os.Stderr, "enroll: one of --token or --org-id is required")
+	if *token == "" && *orgID == "" && *tokenFile == "" && os.Getenv("NODEBEAT_TOKEN") == "" {
+		fmt.Fprintln(os.Stderr, "enroll: one of --token-file, NODEBEAT_TOKEN env, --token or --org-id is required")
 		fs.Usage()
+		return 2
+	}
+	authToken, err := resolveAuthToken(fs, *token, *tokenFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "enroll:", err)
 		return 2
 	}
 	nodeName := *name
@@ -83,7 +89,7 @@ func runEnroll(args []string) int {
 		cl = *clEndpoint
 	}
 
-	client := enroll.NewClient(*controlPlane, *token, *orgID)
+	client := enroll.NewClient(*controlPlane, authToken, *orgID)
 	nodeID, tenantID, rwURL, ingestToken, err := client.RegisterNode(ctx, nodeName, det.Chain, el, cl)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "enroll: register:", err)
@@ -113,7 +119,10 @@ func runEnroll(args []string) int {
 
 	fmt.Printf("enrolled node %q (id %s, chain %s, tenant %s)\n", nodeName, nodeID, det.Chain, tenantID)
 	fmt.Printf("remote-write: %s\n", rwURL)
-	fmt.Printf("ingest token: %s (shown once — stored in %s; rotate via portal)\n", ingestToken, enroll.Path(*stateDir))
+	// The ingest token is NEVER printed: it lives in enrollment.json (0600)
+	// and anyone with terminal scrollback, shell history, or log access
+	// would otherwise capture a credential that never expires.
+	fmt.Printf("ingest token: stored in %s (0600, shown never — rotate via portal)\n", enroll.Path(*stateDir))
 	fmt.Printf("alloy config: %d bytes (server-rendered)\n", len(cfg.AlloyConfig))
 	fmt.Fprintf(os.Stderr, "enrollment saved to %s; start with: nodebeat-agent run --enrolled --state-dir %s\n",
 		enroll.Path(*stateDir), *stateDir)
@@ -129,4 +138,39 @@ func firstEndpoint(det *detect.Result, kinds ...string) string {
 		}
 	}
 	return ""
+}
+
+// resolveAuthToken picks the Clerk JWT without exposing it on the command
+// line: explicit --token wins but warns (visible in /proc and shell
+// history), then NODEBEAT_TOKEN env, then --token-file. Empty means the
+// caller relies on --org-id dev bypass.
+func resolveAuthToken(fs *flag.FlagSet, flagToken, tokenFile string) (string, error) {
+	flagPassed := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "token" {
+			flagPassed = true
+		}
+	})
+	if flagPassed && flagToken != "" {
+		fmt.Fprintln(os.Stderr, "enroll: warning: --token exposes the JWT in the process list and shell history; prefer NODEBEAT_TOKEN env or --token-file")
+		return flagToken, nil
+	}
+	if v := os.Getenv("NODEBEAT_TOKEN"); v != "" {
+		return strings.TrimSpace(v), nil
+	}
+	if tokenFile != "" {
+		raw, err := os.ReadFile(tokenFile)
+		if err != nil {
+			return "", fmt.Errorf("read --token-file: %w", err)
+		}
+		if fi, err := os.Stat(tokenFile); err == nil && fi.Mode().Perm()&0o077 != 0 {
+			fmt.Fprintln(os.Stderr, "enroll: warning: token file is readable beyond its owner; chmod 0600 it")
+		}
+		tok := strings.TrimSpace(string(raw))
+		if tok == "" {
+			return "", fmt.Errorf("token file %s is empty", tokenFile)
+		}
+		return tok, nil
+	}
+	return "", nil
 }

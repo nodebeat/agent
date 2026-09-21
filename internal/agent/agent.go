@@ -4,7 +4,10 @@
 //
 // Trust model: the agent only supervises its own children and writes inside
 // its state dir. It never SSHes anywhere, never restarts the validator, and
-// never opens inbound ports beyond localhost diagnostics.
+// the agent binary itself opens no inbound ports beyond localhost
+// diagnostics. NOTE: the supervised chain exporter has no bind-address flag
+// and listens on 0.0.0.0:9090 (upstream limitation) — operators must restrict
+// it with the host firewall (packaging/firewall/).
 package agent
 
 import (
@@ -44,6 +47,9 @@ type Config struct {
 	Target           string
 	RemoteWriteURL   string
 	Instance         string
+	// IngestToken renders the remote_write Bearer block (standalone agents
+	// writing through the auth-enforcing ingest proxy). Empty omits it.
+	IngestToken      string
 	ExporterBin      string // default: "ethereum-metrics-exporter" or "cosmos-validator-watcher" per chain
 	AlloyBin         string // default "alloy"
 	ExporterPort     int    // default 9090
@@ -109,11 +115,15 @@ type Manifest struct {
 
 // Runner holds the prepared state of one agent run.
 type Runner struct {
-	cfg      Config
-	log      *log.Logger
+	cfg Config
+	log *log.Logger
+	// mu guards det, children, manifest and sup: Reload/ApplyRemoteConfig
+	// (SIGHUP goroutine, enrolled poll loop) race with Run/Start and the
+	// diagnostics server. Take the lock for every access, never across
+	// disk/network IO.
+	mu       sync.RWMutex
 	det      *detect.Result
 	children []supervise.Child
-	mu       sync.RWMutex // guards manifest (Reload races with /manifest)
 	manifest Manifest
 	sup      *supervise.Supervisor
 	registry *prometheus.Registry
@@ -130,11 +140,12 @@ func New(cfg Config, logger *log.Logger) *Runner {
 // ChildrenStats returns supervisor stats, or nil before Start.
 func (r *Runner) ChildrenStats() []supervise.Stats {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if r.sup == nil {
+	sup := r.sup
+	r.mu.RUnlock()
+	if sup == nil {
 		return nil
 	}
-	return r.sup.Stats()
+	return sup.Stats()
 }
 
 // Manifest returns the manifest from the last Prepare/Reload.
@@ -174,6 +185,7 @@ func (r *Runner) materialize(det *detect.Result) error {
 		RemoteWriteURL:     r.cfg.RemoteWriteURL,
 		ExporterMetricsURL: r.cfg.ExporterURL,
 		Instance:           r.cfg.Instance,
+		IngestToken:        r.cfg.IngestToken,
 	})
 	if err != nil {
 		return err
@@ -195,7 +207,10 @@ func (r *Runner) PrepareRemote(det *detect.Result, alloyConfig string) error {
 // and SIGHUPs Alloy. Used by the `run --enrolled` poll loop (which doubles
 // as a heartbeat).
 func (r *Runner) ApplyRemoteConfig(alloyConfig string) error {
-	if r.sup == nil {
+	r.mu.RLock()
+	sup := r.sup
+	r.mu.RUnlock()
+	if sup == nil {
 		return fmt.Errorf("apply before start")
 	}
 	if alloyConfig == "" {
@@ -212,7 +227,7 @@ func (r *Runner) ApplyRemoteConfig(alloyConfig string) error {
 		return fmt.Errorf("write alloy config: %w", err)
 	}
 	r.log.Print("agent: remote pipeline changed, signaling alloy to reload")
-	return r.sup.Signal(ChildAlloy, syscall.SIGHUP)
+	return sup.Signal(ChildAlloy, syscall.SIGHUP)
 }
 
 // materializeWithConfig writes config + manifest + child specs for det using
@@ -255,23 +270,26 @@ func (r *Runner) materializeWithConfig(det *detect.Result, rendered string) erro
 	}
 	alloyArgs = append(alloyArgs, r.ConfigPath())
 
-	r.det = det
-	r.children = []supervise.Child{
+	children := []supervise.Child{
 		{Name: ChildExporter, Path: exporterBin, Args: exporterArgs, Dir: r.cfg.StateDir},
 		{Name: ChildAlloy, Path: alloyBin, Args: alloyArgs, Dir: r.cfg.StateDir},
 	}
 	manifest := buildManifest(det, r.cfg, exporterBin, exporterArgs)
-	r.mu.Lock()
-	r.manifest = manifest
-	r.mu.Unlock()
-
 	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return err
 	}
+	// Disk first, then a single atomic in-memory commit: a failed write
+	// leaves the previous state untouched (no partial mutation, so a later
+	// reload can still recover).
 	if err := os.WriteFile(r.ManifestPath(), manifestJSON, 0o644); err != nil {
 		return fmt.Errorf("write manifest: %w", err)
 	}
+	r.mu.Lock()
+	r.det = det
+	r.children = children
+	r.manifest = manifest
+	r.mu.Unlock()
 	r.log.Printf("agent: detected el=%s cl=%s on %s; wrote %s",
 		det.ELClient, det.CLClient, det.Target, r.ConfigPath())
 	return nil
@@ -281,7 +299,10 @@ func (r *Runner) materializeWithConfig(det *detect.Result, rendered string) erro
 // rewrites it and SIGHUPs Alloy (which reloads from disk and keeps running
 // on the last valid config if the new one is broken).
 func (r *Runner) Reload(ctx context.Context) error {
-	if r.sup == nil {
+	r.mu.RLock()
+	sup := r.sup
+	r.mu.RUnlock()
+	if sup == nil {
 		return fmt.Errorf("reload before start")
 	}
 	dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -300,14 +321,21 @@ func (r *Runner) applyDetection(det *detect.Result) error {
 	if err != nil {
 		return err
 	}
+	r.mu.RLock()
+	prevDet := r.det
+	prevChildren := r.children
+	prevManifest := r.manifest
+	sup := r.sup
+	r.mu.RUnlock()
 	// Detect chain switch: exporter binary depends on chain. A live switch
 	// (ethereum <-> cosmos) requires a full agent restart — Alloy reload
 	// cannot change the exporter child binary/args.
-	if r.det != nil && det.Chain != "" && r.det.Chain != "" && det.Chain != r.det.Chain {
-		return fmt.Errorf("agent: chain changed %q -> %q; restart the agent", r.det.Chain, det.Chain)
+	if prevDet != nil && det.Chain != "" && prevDet.Chain != "" && det.Chain != prevDet.Chain {
+		return fmt.Errorf("agent: chain changed %q -> %q; restart the agent", prevDet.Chain, det.Chain)
 	}
-	prevChildren := r.children
-	prevManifest := r.manifest
+	// On materialize failure the previous in-memory state is untouched
+	// (disk-first commit), so just return the error: the next reload can
+	// still recover.
 	if err := r.materialize(det); err != nil {
 		return err
 	}
@@ -316,8 +344,8 @@ func (r *Runner) applyDetection(det *detect.Result) error {
 	// materialize updated r.manifest + r.det; restore children but keep the
 	// new config on disk. Manifest's exporter field is reverted to match the
 	// actually-running child.
-	r.children = prevChildren
 	r.mu.Lock()
+	r.children = prevChildren
 	// Revert manifest exporter to reflect the still-running child, but keep
 	// chain/target and scrape jobs from the new detection.
 	runningExporter := ""
@@ -334,11 +362,12 @@ func (r *Runner) applyDetection(det *detect.Result) error {
 	} else {
 		r.manifest = prevManifest
 	}
+	manifest := r.manifest
+	r.mu.Unlock()
 	// Persist the reverted manifest.
-	if b, err := json.MarshalIndent(r.manifest, "", "  "); err == nil {
+	if b, err := json.MarshalIndent(manifest, "", "  "); err == nil {
 		_ = os.WriteFile(r.ManifestPath(), b, 0o644)
 	}
-	r.mu.Unlock()
 	after, err := os.ReadFile(r.ConfigPath())
 	if err != nil {
 		return err
@@ -348,13 +377,17 @@ func (r *Runner) applyDetection(det *detect.Result) error {
 		return nil
 	}
 	r.log.Print("agent: pipeline changed, signaling alloy to reload")
-	return r.sup.Signal(ChildAlloy, syscall.SIGHUP)
+	return sup.Signal(ChildAlloy, syscall.SIGHUP)
 }
 
 // Start launches the children and serves /metrics + /manifest until ctx ends.
 // Prepare must have run first.
 func (r *Runner) Start(ctx context.Context) error {
-	if len(r.children) == 0 {
+	r.mu.RLock()
+	children := r.children
+	det := r.det
+	r.mu.RUnlock()
+	if len(children) == 0 {
 		return fmt.Errorf("start before prepare")
 	}
 	r.registry = prometheus.NewRegistry()
@@ -364,7 +397,7 @@ func (r *Runner) Start(ctx context.Context) error {
 		Name: "nodebeat_agent_info",
 		Help: "Agent identity and detected clients.",
 	}, []string{"version", "target", "chain", "el_client", "cl_client"})
-	info.WithLabelValues(version.Version, r.det.Target, r.det.Chain, r.det.ELClient, r.det.CLClient).Set(1)
+	info.WithLabelValues(version.Version, det.Target, det.Chain, det.ELClient, det.CLClient).Set(1)
 	r.registry.MustRegister(info)
 	up := prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "nodebeat_agent_up",
@@ -374,7 +407,7 @@ func (r *Runner) Start(ctx context.Context) error {
 	r.registry.MustRegister(up)
 
 	r.mu.Lock()
-	r.sup = supervise.New(r.log, r.cfg.SuperviseOpts, r.children...)
+	r.sup = supervise.New(r.log, r.cfg.SuperviseOpts, children...)
 	r.mu.Unlock()
 
 	mux := http.NewServeMux()
@@ -438,6 +471,12 @@ func firstURL(det *detect.Result, kind string) string {
 }
 
 func buildManifest(det *detect.Result, cfg Config, exporterBin string, exporterArgs []string) Manifest {
+	// Manifest target must match the Prometheus instance label (cfg.Instance,
+	// defaulting to the detection target), not the raw target IP.
+	target := cfg.Instance
+	if target == "" {
+		target = det.Target
+	}
 	hot := []string{cfg.ExporterURL}
 	for _, e := range det.Endpoints {
 		if e.Kind == detect.KindCLMetrics || e.Kind == detect.KindCosmosMetrics {
@@ -453,7 +492,7 @@ func buildManifest(det *detect.Result, cfg Config, exporterBin string, exporterA
 	return Manifest{
 		AgentVersion:    version.Version,
 		GeneratedAt:     time.Now().UTC(),
-		Target:          det.Target,
+		Target:          target,
 		Chain:           det.Chain,
 		ELClient:        det.ELClient,
 		CLClient:        det.CLClient,

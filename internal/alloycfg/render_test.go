@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/nodebeat/agent/internal/detect"
@@ -56,6 +57,34 @@ func TestRenderValidation(t *testing.T) {
 	}
 	if _, err := Render(fullDetection(), Options{}); err == nil {
 		t.Error("expected error for missing remote-write URL, got nil")
+	}
+	bad := fullDetection()
+	bad.Endpoints = append(bad.Endpoints, detect.Endpoint{Kind: detect.KindCLMetrics, URL: "://no-host"})
+	if _, err := Render(bad, Options{RemoteWriteURL: "http://x:8428/api/v1/write"}); err == nil {
+		t.Error("expected error for malformed metrics URL, got nil")
+	}
+}
+
+func TestRenderTenantID(t *testing.T) {
+	got, err := Render(fullDetection(), Options{
+		RemoteWriteURL: "https://ingest.example:8428/api/v1/write",
+		TenantID:       "org_123",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`tenant_id = "org_123"`, `target_label = "tenant_id"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q in rendered config\n%s", want, got)
+		}
+	}
+	// Without TenantID the label must be absent entirely.
+	plain, err := Render(fullDetection(), Options{RemoteWriteURL: "https://ingest.example:8428/api/v1/write"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plain, "tenant_id") {
+		t.Errorf("tenant_id label must be absent when TenantID is empty\n%s", plain)
 	}
 }
 

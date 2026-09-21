@@ -30,14 +30,16 @@ groups:
             checklist as EL peers, plus CL discovery port (default 9000).
 
       - alert: EthereumReorgDeep
-        expr: eth_con_reorg_depth > 2
+        expr: increase(eth_con_beacon_reorg_depth[5m]) > 2
         for: 5m
         labels:
           severity: warning
           chain: ethereum
         annotations:
-          summary: "Deep reorg observed (depth {{ $value }}, {{ $labels.instance }})"
+          summary: "Frequent reorgs observed ({{ $value }} in 5m, {{ $labels.instance }})"
           description: >-
-            A reorg deeper than 2 slots sustained 5m is unusual on mainnet
-            and worth a look (late blocks, MEV games, or an unhealthy head).
+            More than 2 beacon reorgs in 5 minutes sustained 5m is unusual on
+            mainnet and worth a look (late blocks, MEV games, or an unhealthy
+            head). NOTE: eth_con_beacon_reorg_depth is a counter of reorg
+            events, so this fires on reorg frequency, not single-reorg depth.
             Frequent shallow reorgs are normal and do not page.

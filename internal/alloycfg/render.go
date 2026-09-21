@@ -37,6 +37,10 @@ type Options struct {
 	// Instance labels every series (normally the target host). Defaults to
 	// the detection target.
 	Instance string
+	// TenantID stamps tenant_id on every series (SaaS multi-tenancy:
+	// per-org VM accounts, usage metering, alert routing). Empty omits
+	// the label (standalone/dev single-tenant mode).
+	TenantID string
 }
 
 const defaultExporterMetricsURL = "http://127.0.0.1:9090/metrics"
@@ -67,6 +71,8 @@ type staticTarget struct {
 type pipeline struct {
 	Instance         string
 	Chain            string
+	TenantID         string
+	HasTenantID      bool
 	RemoteWriteURL   string
 	IngestToken      string
 	HasIngestToken   bool
@@ -100,10 +106,15 @@ func Render(det *detect.Result, opts Options) (string, error) {
 		{Key: "chain", Value: det.Chain},
 		{Key: "instance", Value: instance},
 	}
+	if opts.TenantID != "" {
+		base = append(base, label{Key: "tenant_id", Value: opts.TenantID})
+	}
 
 	p := pipeline{
 		Instance:         instance,
 		Chain:            det.Chain,
+		TenantID:         opts.TenantID,
+		HasTenantID:      opts.TenantID != "",
 		RemoteWriteURL:   opts.RemoteWriteURL,
 		IngestToken:      opts.IngestToken,
 		HasIngestToken:   opts.IngestToken != "",
@@ -125,21 +136,27 @@ func Render(det *detect.Result, opts Options) (string, error) {
 	case detect.ChainEthereum:
 		// Ethereum: CL metrics on hot path, EL metrics on standard path
 		for _, u := range det.MetricsURLs(detect.KindCLMetrics) {
-			if t, err := targetFromURL(u, append(base, label{Key: "role", Value: "consensus"})); err == nil {
-				p.Hot = append(p.Hot, t)
+			t, err := targetFromURL(u, append(base, label{Key: "role", Value: "consensus"}))
+			if err != nil {
+				return "", fmt.Errorf("bad CL metrics URL %q: %w", u, err)
 			}
+			p.Hot = append(p.Hot, t)
 		}
 		for _, u := range det.MetricsURLs(detect.KindELMetrics) {
-			if t, err := targetFromURL(u, append(base, label{Key: "role", Value: "execution"})); err == nil {
-				p.Standard = append(p.Standard, t)
+			t, err := targetFromURL(u, append(base, label{Key: "role", Value: "execution"}))
+			if err != nil {
+				return "", fmt.Errorf("bad EL metrics URL %q: %w", u, err)
 			}
+			p.Standard = append(p.Standard, t)
 		}
 	case detect.ChainCosmos:
 		// Cosmos: CometBFT metrics on hot path (consensus-critical)
 		for _, u := range det.MetricsURLs(detect.KindCosmosMetrics) {
-			if t, err := targetFromURL(u, append(base, label{Key: "role", Value: "consensus"})); err == nil {
-				p.Hot = append(p.Hot, t)
+			t, err := targetFromURL(u, append(base, label{Key: "role", Value: "consensus"}))
+			if err != nil {
+				return "", fmt.Errorf("bad CometBFT metrics URL %q: %w", u, err)
 			}
+			p.Hot = append(p.Hot, t)
 		}
 		// Cosmos RPC/REST don't have native metrics endpoints we scrape
 		// Standard path could include Cosmos REST metrics if needed
@@ -236,6 +253,13 @@ discovery.relabel "node" {
 		target_label = "job"
 		replacement  = {{q .NodeJob}}
 	}
+{{- if .HasTenantID}}
+
+	rule {
+		target_label = "tenant_id"
+		replacement  = {{q .TenantID}}
+	}
+{{- end}}
 }
 
 prometheus.scrape "node" {

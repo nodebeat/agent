@@ -1,6 +1,7 @@
 # Standard path: host infrastructure from the embedded node_exporter
 # (Alloy job "prometheus.scrape.node", instance = detect target).
-# All rules carry duration guards; none page.
+# All rules carry duration guards except the staleness backstop
+# (NodeTelemetryStale, for: 0s — absence has no duration to guard); none page.
 groups:
   - name: infra
     interval: 30s
@@ -32,8 +33,11 @@ groups:
 
       - alert: NodeCPUSaturated
         expr: |
-          avg by (instance) (
-            rate(node_cpu_seconds_total{mode!="idle"}[5m])
+          # Idle-based utilization: averaging non-idle rates across every
+          # (cpu x mode) series can never reach 0.9 on multi-core hosts.
+          # Average the per-cpu idle fraction instead, then invert.
+          1 - avg by (instance) (
+            rate(node_cpu_seconds_total{mode="idle"}[5m])
           ) > 0.9
         for: 15m
         labels:

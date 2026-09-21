@@ -17,9 +17,10 @@ go run ./cmd/nodebeat-agent run --target 10.0.1.5 \
   --remote-write-url http://localhost:8428/api/v1/write \
   --state-dir .nodebeat
 
-# SaaS mode (after creating a node in the portal)
+# SaaS mode (after creating a node in the portal; JWT via env, never a flag)
+export NODEBEAT_TOKEN=$CLERK_JWT
 nodebeat-agent enroll --control-plane https://api.nodebeat.stream \
-  --token $CLERK_JWT --name my-node --target 10.0.1.5
+  --name my-node --target 10.0.1.5
 nodebeat-agent run --enrolled --state-dir .nodebeat
 ```
 

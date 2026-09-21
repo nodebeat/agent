@@ -30,6 +30,12 @@ done
 [ -n "$RW_URL" ] || { echo "--remote-write-url is required" >&2; exit 2; }
 command -v systemctl >/dev/null || { echo "systemd not found" >&2; exit 1; }
 
+# The agent resolves these via PATH at startup; fail here with a clear
+# message instead of a crash-looping unit later.
+command -v alloy >/dev/null || { echo "alloy not on PATH (same dir as the agent binary, or /usr/local/bin)" >&2; exit 1; }
+command -v ethereum-metrics-exporter >/dev/null || command -v cosmos-validator-watcher >/dev/null || {
+  echo "no chain exporter on PATH (need ethereum-metrics-exporter and/or cosmos-validator-watcher)" >&2; exit 1; }
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 if ! id nodebeat >/dev/null 2>&1; then
