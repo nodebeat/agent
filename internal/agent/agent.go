@@ -44,9 +44,9 @@ const (
 // Config tunes one agent run. Zero values select documented defaults via
 // withDefaults, except DisableReporting which the CLI defaults to true.
 type Config struct {
-	Target           string
-	RemoteWriteURL   string
-	Instance         string
+	Target         string
+	RemoteWriteURL string
+	Instance       string
 	// IngestToken renders the remote_write Bearer block (standalone agents
 	// writing through the auth-enforcing ingest proxy). Empty omits it.
 	IngestToken      string
@@ -100,17 +100,17 @@ type ScrapeJob struct {
 // Manifest states exactly what the agent collects and where it goes. It is
 // written to the state dir and served on /manifest.
 type Manifest struct {
-	AgentVersion    string      `json:"agent_version"`
-	GeneratedAt     time.Time   `json:"generated_at"`
-	Target          string      `json:"target"`
-	Chain           string      `json:"chain"`
-	ELClient        string      `json:"el_client,omitempty"`
-	CLClient        string      `json:"cl_client,omitempty"`
-	RemoteWriteURL  string      `json:"remote_write_url"`
-	Exporter        string      `json:"exporter"`
-	AlloyConfig     string      `json:"alloy_config"`
-	ScrapeJobs      []ScrapeJob `json:"scrape_jobs"`
-	StateDir        string      `json:"state_dir"`
+	AgentVersion   string      `json:"agent_version"`
+	GeneratedAt    time.Time   `json:"generated_at"`
+	Target         string      `json:"target"`
+	Chain          string      `json:"chain"`
+	ELClient       string      `json:"el_client,omitempty"`
+	CLClient       string      `json:"cl_client,omitempty"`
+	RemoteWriteURL string      `json:"remote_write_url"`
+	Exporter       string      `json:"exporter"`
+	AlloyConfig    string      `json:"alloy_config"`
+	ScrapeJobs     []ScrapeJob `json:"scrape_jobs"`
+	StateDir       string      `json:"state_dir"`
 }
 
 // Runner holds the prepared state of one agent run.
@@ -490,15 +490,15 @@ func buildManifest(det *detect.Result, cfg Config, exporterBin string, exporterA
 		}
 	}
 	return Manifest{
-		AgentVersion:    version.Version,
-		GeneratedAt:     time.Now().UTC(),
-		Target:          target,
-		Chain:           det.Chain,
-		ELClient:        det.ELClient,
-		CLClient:        det.CLClient,
-		RemoteWriteURL:  cfg.RemoteWriteURL,
-		Exporter:        strings.Join(append([]string{exporterBin}, exporterArgs...), " "),
-		AlloyConfig:     filepath.Join(cfg.StateDir, "config.alloy"),
+		AgentVersion:   version.Version,
+		GeneratedAt:    time.Now().UTC(),
+		Target:         target,
+		Chain:          det.Chain,
+		ELClient:       det.ELClient,
+		CLClient:       det.CLClient,
+		RemoteWriteURL: cfg.RemoteWriteURL,
+		Exporter:       strings.Join(append([]string{exporterBin}, exporterArgs...), " "),
+		AlloyConfig:    filepath.Join(cfg.StateDir, "config.alloy"),
 		ScrapeJobs: []ScrapeJob{
 			{Name: "hot", Interval: alloycfg.HotInterval, Targets: hot},
 			{Name: "standard", Interval: alloycfg.StandardInterval, Targets: standard},

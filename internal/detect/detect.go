@@ -40,8 +40,8 @@ const (
 // Ports holds the discovery ports for Ethereum and Cosmos.
 // Defaults match the common client layout; tests override them.
 type Ports struct {
-	ELRPC   int // Ethereum JSON-RPC (default 8545)
-	Beacon  int // Beacon Node API (default 5052)
+	ELRPC      int // Ethereum JSON-RPC (default 8545)
+	Beacon     int // Beacon Node API (default 5052)
 	CosmosRPC  int // CometBFT RPC (default 26657)
 	CosmosREST int // Cosmos REST API (default 1317)
 }

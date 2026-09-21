@@ -15,7 +15,7 @@ func TestIdentifyEL(t *testing.T) {
 	cases := map[string]string{
 		"Geth/v1.14.0-stable-362d3a89/linux-amd64/go1.22.1": "geth",
 		"Reth/v1.1.0-2c1c981/x86_64-unknown-linux-gnu":      "reth",
-		"Nethermind/v1.25.0+8a5d7dc8/linux-x64/dotnet8.0.7":  "nethermind",
+		"Nethermind/v1.25.0+8a5d7dc8/linux-x64/dotnet8.0.7": "nethermind",
 		"erigon/v2.60.0/linux-amd64/go1.22.1":               "erigon",
 		"besu/v24.7.0/linux-x86_64/openjdk-java-21":         "besu",
 		"EthereumJS/1.2.3/darwin-arm64/nodejs":              "ethereumjs",
@@ -49,12 +49,12 @@ func TestIdentifyCL(t *testing.T) {
 
 func TestIdentifyCosmos(t *testing.T) {
 	cases := map[string]string{
-		"cometbft/1.0.0":           "cometbft",
-		"tendermint/0.34.0":        "tendermint",
-		"CometBFT/v1.0.0":          "cometbft",
-		"Tendermint/v0.34.0":       "tendermint",
-		"":                         "",
-		"UnknownClient/v9.9.9":     "",
+		"cometbft/1.0.0":       "cometbft",
+		"tendermint/0.34.0":    "tendermint",
+		"CometBFT/v1.0.0":      "cometbft",
+		"Tendermint/v0.34.0":   "tendermint",
+		"":                     "",
+		"UnknownClient/v9.9.9": "",
 	}
 	for in, want := range cases {
 		if got := IdentifyCosmos(in); got != want {

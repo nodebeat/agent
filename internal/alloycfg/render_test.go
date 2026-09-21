@@ -41,8 +41,8 @@ func partialDetection() *detect.Result {
 
 func cosmosDetection() *detect.Result {
 	return &detect.Result{
-		Target:   "node3.example",
-		Chain:    detect.ChainCosmos,
+		Target: "node3.example",
+		Chain:  detect.ChainCosmos,
 		Endpoints: []detect.Endpoint{
 			{Kind: detect.KindCosmosRPC, URL: "http://node3.example:26657"},
 			{Kind: detect.KindCosmosREST, URL: "http://node3.example:1317"},
