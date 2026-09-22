@@ -21,9 +21,9 @@ import (
 func runEnroll(args []string) int {
 	fs := flag.NewFlagSet("enroll", flag.ContinueOnError)
 	controlPlane := fs.String("control-plane", "", "control-plane base URL, e.g. http://localhost:18080 (required)")
-	token := fs.String("token", "", "Clerk session JWT (Bearer auth; DEPRECATED: visible in the process list — prefer NODEBEAT_TOKEN env or --token-file)")
-	tokenFile := fs.String("token-file", "", "path to a file containing the Clerk session JWT (0600 recommended)")
-	orgID := fs.String("org-id", "", "org id for dev/self-hosted planes without Clerk (X-Org-ID header)")
+	token := fs.String("token", "", "session JWT (Bearer auth; DEPRECATED: visible in the process list — prefer NODEBEAT_TOKEN env or --token-file)")
+	tokenFile := fs.String("token-file", "", "path to a file containing the session JWT (0600 recommended)")
+	orgID := fs.String("org-id", "", "our org id or slug (X-Org-ID header; selects the tenant — a JWT is still required)")
 	name := fs.String("name", "", "node name (default: OS hostname)")
 	target := fs.String("target", "", "node hostname or IP to auto-detect (optional; skips probing when empty)")
 	chain := fs.String("chain", "", "chain: ethereum or cosmos (required when --target is empty)")
@@ -38,8 +38,8 @@ func runEnroll(args []string) int {
 		fs.Usage()
 		return 2
 	}
-	if *token == "" && *orgID == "" && *tokenFile == "" && os.Getenv("NODEBEAT_TOKEN") == "" {
-		fmt.Fprintln(os.Stderr, "enroll: one of --token-file, NODEBEAT_TOKEN env, --token or --org-id is required")
+	if *token == "" && *tokenFile == "" && os.Getenv("NODEBEAT_TOKEN") == "" {
+		fmt.Fprintln(os.Stderr, "enroll: a session JWT is required (--token-file, NODEBEAT_TOKEN env, or --token); --org-id only selects the org")
 		fs.Usage()
 		return 2
 	}
@@ -96,7 +96,7 @@ func runEnroll(args []string) int {
 		return 1
 	}
 	// Steady state uses the node token (narrow scope, never expires).
-	// The Clerk JWT authorized this call only and is never persisted.
+	// The session JWT authorized this call only and is never persisted.
 	nodeClient := enroll.NewClient(*controlPlane, ingestToken, "")
 	cfg, err := nodeClient.FetchConfig(ctx, nodeID)
 	if err != nil {
@@ -140,10 +140,11 @@ func firstEndpoint(det *detect.Result, kinds ...string) string {
 	return ""
 }
 
-// resolveAuthToken picks the Clerk JWT without exposing it on the command
+// resolveAuthToken picks the session JWT without exposing it on the command
 // line: explicit --token wins but warns (visible in /proc and shell
-// history), then NODEBEAT_TOKEN env, then --token-file. Empty means the
-// caller relies on --org-id dev bypass.
+// history), then NODEBEAT_TOKEN env, then --token-file. Empty is an error:
+// the server verifies every request and --org-id alone authenticates
+// nothing.
 func resolveAuthToken(fs *flag.FlagSet, flagToken, tokenFile string) (string, error) {
 	flagPassed := false
 	fs.Visit(func(f *flag.Flag) {
@@ -172,5 +173,5 @@ func resolveAuthToken(fs *flag.FlagSet, flagToken, tokenFile string) (string, er
 		}
 		return tok, nil
 	}
-	return "", nil
+	return "", fmt.Errorf("a session JWT is required (--token-file, NODEBEAT_TOKEN env, or --token)")
 }

@@ -3,13 +3,14 @@
 //	enroll: detect (optional) → POST /api/v1/nodes → save enrollment.json
 //	run --enrolled: load enrollment.json → GET /nodes/:id/config → supervise
 //
-// Auth (lean v1): a Clerk session JWT (--token, sent as Bearer) or, for
-// dev/self-hosted control planes with no CLERK_SECRET_KEY, --org-id (sent as
-// X-Org-ID) authenticates the enroll call. The server returns a per-node
-// opaque ingest token (nb_ingest_...) which is the daemon's only credential:
-// it authorizes config polls and remote_write (via the nginx ingest proxy).
-// The user JWT is never persisted; the ingest token is stored 0600
-// alongside the enrollment. Treat the state dir as secret.
+// Auth: a session JWT (--token, sent as Bearer; Clerk in prod, devjwt-minted
+// in dev) plus --org-id (sent as X-Org-ID, selects the tenant). The server
+// verifies the JWT on every call and resolves the org against memberships —
+// there is no header-only mode. The server returns a per-node opaque ingest
+// token (nb_ingest_...) which is the daemon's only credential: it authorizes
+// config polls and remote_write (via the nginx ingest proxy). The user JWT
+// is never persisted; the ingest token is stored 0600 alongside the
+// enrollment. Treat the state dir as secret.
 package enroll
 
 import (
@@ -96,8 +97,8 @@ type Client struct {
 	http  *http.Client
 }
 
-// NewClient builds a client. Either token (Clerk JWT) or orgID (dev bypass)
-// must be set; token wins when both are present.
+// NewClient builds a client. token (session JWT) is always sent as Bearer;
+// orgID (our org id or slug) is sent as X-Org-ID to select the tenant.
 func NewClient(controlPlane, token, orgID string) *Client {
 	return &Client{
 		base:  strings.TrimSuffix(controlPlane, "/"),
@@ -110,7 +111,8 @@ func NewClient(controlPlane, token, orgID string) *Client {
 func (c *Client) auth(req *http.Request) {
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
-	} else if c.orgID != "" {
+	}
+	if c.orgID != "" {
 		req.Header.Set("X-Org-ID", c.orgID)
 	}
 }
