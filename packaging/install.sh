@@ -4,7 +4,12 @@
 #   sudo packaging/install.sh --bin ./bin/nodebeat-agent \
 #     --target 127.0.0.1 \
 #     --remote-write-url https://ingest.example:8428/api/v1/write \
-#     [--instance NAME]
+#     [--instance NAME] [--el-rpc-port 8545 ...]
+#
+# Port overrides (devnet ephemeral host ports; see --help for the full list).
+# Unset = standard ports (metrics 0 = per detected client default).
+# Every NB_*_PORT is always written to agent.env so the systemd unit never
+# expands an empty flag value.
 #
 # Installs: binary -> /usr/local/bin, unit -> /etc/systemd/system,
 # env -> /etc/nodebeat/agent.env (0640), user `nodebeat`.
@@ -13,12 +18,25 @@
 set -euo pipefail
 
 BIN=""; TARGET=""; RW_URL=""; INSTANCE=""
+EL_RPC_PORT=8545; BEACON_PORT=5052; EL_METRICS_PORT=0; CL_METRICS_PORT=0
+EL_P2P_PORT=30303; CL_P2P_PORT=9000
+COSMOS_RPC_PORT=26657; COSMOS_REST_PORT=1317; COSMOS_METRICS_PORT=0; COSMOS_P2P_PORT=26656
 while [ $# -gt 0 ]; do
   case "$1" in
     --bin) BIN="$2"; shift 2 ;;
     --target) TARGET="$2"; shift 2 ;;
     --remote-write-url) RW_URL="$2"; shift 2 ;;
     --instance) INSTANCE="$2"; shift 2 ;;
+    --el-rpc-port) EL_RPC_PORT="$2"; shift 2 ;;
+    --beacon-port) BEACON_PORT="$2"; shift 2 ;;
+    --el-metrics-port) EL_METRICS_PORT="$2"; shift 2 ;;
+    --cl-metrics-port) CL_METRICS_PORT="$2"; shift 2 ;;
+    --el-p2p-port) EL_P2P_PORT="$2"; shift 2 ;;
+    --cl-p2p-port) CL_P2P_PORT="$2"; shift 2 ;;
+    --cosmos-rpc-port) COSMOS_RPC_PORT="$2"; shift 2 ;;
+    --cosmos-rest-port) COSMOS_REST_PORT="$2"; shift 2 ;;
+    --cosmos-metrics-port) COSMOS_METRICS_PORT="$2"; shift 2 ;;
+    --cosmos-p2p-port) COSMOS_P2P_PORT="$2"; shift 2 ;;
     -h|--help) sed -n '2,/^$/p' "$0"; exit 0 ;;
     *) echo "unknown flag: $1 (see --help)" >&2; exit 2 ;;
   esac
@@ -51,6 +69,16 @@ cat > /etc/nodebeat/agent.env <<EOF
 NB_TARGET=$TARGET
 NB_REMOTE_WRITE_URL=$RW_URL
 NB_INSTANCE=$INSTANCE
+NB_EL_RPC_PORT=$EL_RPC_PORT
+NB_BEACON_PORT=$BEACON_PORT
+NB_EL_METRICS_PORT=$EL_METRICS_PORT
+NB_CL_METRICS_PORT=$CL_METRICS_PORT
+NB_EL_P2P_PORT=$EL_P2P_PORT
+NB_CL_P2P_PORT=$CL_P2P_PORT
+NB_COSMOS_RPC_PORT=$COSMOS_RPC_PORT
+NB_COSMOS_REST_PORT=$COSMOS_REST_PORT
+NB_COSMOS_METRICS_PORT=$COSMOS_METRICS_PORT
+NB_COSMOS_P2P_PORT=$COSMOS_P2P_PORT
 EOF
 chown root:nodebeat /etc/nodebeat/agent.env
 chmod 0640 /etc/nodebeat/agent.env

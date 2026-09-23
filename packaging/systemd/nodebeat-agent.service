@@ -9,10 +9,23 @@ Type=simple
 User=nodebeat
 Group=nodebeat
 EnvironmentFile=/etc/nodebeat/agent.env
+# Port overrides (devnet ephemeral host ports). install.sh always writes every
+# NB_*_PORT (defaults = standards, metrics 0 = per-client default), so no
+# flag ever expands empty. Re-run install.sh after editing agent.env.
 ExecStart=/usr/local/bin/nodebeat-agent run \
   --target ${NB_TARGET} \
   --remote-write-url ${NB_REMOTE_WRITE_URL} \
   --instance ${NB_INSTANCE} \
+  --el-rpc-port ${NB_EL_RPC_PORT} \
+  --beacon-port ${NB_BEACON_PORT} \
+  --el-metrics-port ${NB_EL_METRICS_PORT} \
+  --cl-metrics-port ${NB_CL_METRICS_PORT} \
+  --el-p2p-port ${NB_EL_P2P_PORT} \
+  --cl-p2p-port ${NB_CL_P2P_PORT} \
+  --cosmos-rpc-port ${NB_COSMOS_RPC_PORT} \
+  --cosmos-rest-port ${NB_COSMOS_REST_PORT} \
+  --cosmos-metrics-port ${NB_COSMOS_METRICS_PORT} \
+  --cosmos-p2p-port ${NB_COSMOS_P2P_PORT} \
   --state-dir /var/lib/nodebeat
 WorkingDirectory=/var/lib/nodebeat
 StateDirectory=nodebeat
