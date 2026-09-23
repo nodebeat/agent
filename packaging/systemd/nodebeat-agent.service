@@ -16,6 +16,7 @@ ExecStart=/usr/local/bin/nodebeat-agent run \
   --target ${NB_TARGET} \
   --remote-write-url ${NB_REMOTE_WRITE_URL} \
   --instance ${NB_INSTANCE} \
+  --ingest-token ${NB_INGEST_TOKEN} \
   --el-rpc-port ${NB_EL_RPC_PORT} \
   --beacon-port ${NB_BEACON_PORT} \
   --el-metrics-port ${NB_EL_METRICS_PORT} \

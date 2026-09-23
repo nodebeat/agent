@@ -4,7 +4,10 @@
 #   sudo packaging/install.sh --bin ./bin/nodebeat-agent \
 #     --target 127.0.0.1 \
 #     --remote-write-url https://ingest.example:8428/api/v1/write \
-#     [--instance NAME] [--el-rpc-port 8545 ...]
+#     [--instance NAME] [--ingest-token TOKEN] [--el-rpc-port 8545 ...]
+#
+# Token via flag is convenient but leaks into history/ps; prefer
+# NODEBEAT_INGEST_TOKEN=... sudo -E packaging/install.sh ...
 #
 # Port overrides (devnet ephemeral host ports; see --help for the full list).
 # Unset = standard ports (metrics 0 = per detected client default).
@@ -17,7 +20,10 @@
 # (same directory as the agent binary, or /usr/local/bin). Re-runnable.
 set -euo pipefail
 
-BIN=""; TARGET=""; RW_URL=""; INSTANCE=""
+BIN=""; TARGET=""; RW_URL=""; INSTANCE=""; INGEST_TOKEN=""
+# Prefer env (avoids the secret in shell history / process list at install):
+#   NODEBEAT_INGEST_TOKEN=... sudo -E packaging/install.sh ...
+[ -n "${NODEBEAT_INGEST_TOKEN:-}" ] && INGEST_TOKEN="$NODEBEAT_INGEST_TOKEN"
 EL_RPC_PORT=8545; BEACON_PORT=5052; EL_METRICS_PORT=0; CL_METRICS_PORT=0
 EL_P2P_PORT=30303; CL_P2P_PORT=9000
 COSMOS_RPC_PORT=26657; COSMOS_REST_PORT=1317; COSMOS_METRICS_PORT=0; COSMOS_P2P_PORT=26656
@@ -27,6 +33,7 @@ while [ $# -gt 0 ]; do
     --target) TARGET="$2"; shift 2 ;;
     --remote-write-url) RW_URL="$2"; shift 2 ;;
     --instance) INSTANCE="$2"; shift 2 ;;
+    --ingest-token) INGEST_TOKEN="$2"; INGEST_TOKEN_FROM_FLAG=1; shift 2 ;;
     --el-rpc-port) EL_RPC_PORT="$2"; shift 2 ;;
     --beacon-port) BEACON_PORT="$2"; shift 2 ;;
     --el-metrics-port) EL_METRICS_PORT="$2"; shift 2 ;;
@@ -43,6 +50,9 @@ while [ $# -gt 0 ]; do
 done
 
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
+if [ "${INGEST_TOKEN_FROM_FLAG:-0}" = 1 ]; then
+  echo "warning: --ingest-token exposes the secret in the process list and shell history; prefer NODEBEAT_INGEST_TOKEN env with sudo -E" >&2
+fi
 [ -n "$BIN" ] && [ -f "$BIN" ] || { echo "--bin <agent binary> is required" >&2; exit 2; }
 [ -n "$TARGET" ] || { echo "--target is required" >&2; exit 2; }
 [ -n "$RW_URL" ] || { echo "--remote-write-url is required" >&2; exit 2; }
@@ -69,6 +79,7 @@ cat > /etc/nodebeat/agent.env <<EOF
 NB_TARGET=$TARGET
 NB_REMOTE_WRITE_URL=$RW_URL
 NB_INSTANCE=$INSTANCE
+NB_INGEST_TOKEN=$INGEST_TOKEN
 NB_EL_RPC_PORT=$EL_RPC_PORT
 NB_BEACON_PORT=$BEACON_PORT
 NB_EL_METRICS_PORT=$EL_METRICS_PORT
