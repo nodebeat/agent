@@ -1,16 +1,17 @@
 // Package enroll implements the SaaS enrollment flow for nodebeat-agent:
 //
-//	enroll: detect (optional) → POST /api/v1/nodes → save enrollment.json
+// Portal creates a pending node (name only) and shows its ingest token once.
+// enroll (on the node host): detect → POST /api/v1/nodes/activate → save
+// enrollment.json. Activation uploads detection (chain, clients, endpoints,
+// hostname), flips the node to 'active', and returns the rendered pipeline.
+//
 //	run --enrolled: load enrollment.json → GET /nodes/:id/config → supervise
 //
-// Auth: a session JWT (--token, sent as Bearer; Clerk in prod, devjwt-minted
-// in dev) plus --org-id (sent as X-Org-ID, selects the tenant). The server
-// verifies the JWT on every call and resolves the org against memberships —
-// there is no header-only mode. The server returns a per-node opaque ingest
-// token (nb_ingest_...) which is the daemon's only credential: it authorizes
-// config polls and remote_write (via the nginx ingest proxy). The user JWT
-// is never persisted; the ingest token is stored 0600 alongside the
-// enrollment. Treat the state dir as secret.
+// Auth throughout is the node's own ingest token (nb_ingest_..., Bearer):
+// it authorizes activation, config polls, and remote_write (via the nginx
+// ingest proxy). No session JWT ever touches the node host. The ingest
+// token is stored 0600 alongside the enrollment. Treat the state dir as
+// secret.
 package enroll
 
 import (
@@ -97,8 +98,10 @@ type Client struct {
 	http  *http.Client
 }
 
-// NewClient builds a client. token (session JWT) is always sent as Bearer;
-// orgID (our org id or slug) is sent as X-Org-ID to select the tenant.
+// NewClient builds a client. token (the node's ingest token, nb_ingest_...)
+// is always sent as Bearer; orgID is sent as X-Org-ID for the legacy
+// session-authed calls (activation and polls resolve the org from the node
+// token instead).
 func NewClient(controlPlane, token, orgID string) *Client {
 	return &Client{
 		base:  strings.TrimSuffix(controlPlane, "/"),
@@ -149,33 +152,46 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 	return resp, nil
 }
 
-// RegisterNode creates the node server-side and returns its id, tenant,
-// ingest URL and per-node ingest token (shown once — persist it, it is
-// never returned again except via rotate).
-func (c *Client) RegisterNode(ctx context.Context, name, chain, elEndpoint, clEndpoint string) (nodeID, tenantID, remoteWriteURL, ingestToken string, err error) {
-	resp, err := c.do(ctx, "POST", "/api/v1/nodes", map[string]any{
-		"name": name, "chain": chain, "el_endpoint": elEndpoint, "cl_endpoint": clEndpoint,
-	})
+// ActivateRequest is the agent's detection uploaded to activate a
+// portal-created (pending) node. The presented ingest token identifies the
+// node, so no name or id is needed.
+type ActivateRequest struct {
+	Chain     string            `json:"chain"`
+	ELClient  string            `json:"el_client,omitempty"`
+	CLClient  string            `json:"cl_client,omitempty"`
+	Endpoints []detect.Endpoint `json:"endpoints,omitempty"`
+	Hostname  string            `json:"hostname,omitempty"`
+}
+
+// ActivateResponse carries everything enroll persists into enrollment.json.
+type ActivateResponse struct {
+	NodeID         string `json:"node_id"`
+	NodeName       string `json:"node_name"`
+	TenantID       string `json:"tenant_id"`
+	RemoteWriteURL string `json:"remote_write_url"`
+	AlloyConfig    string `json:"alloy_config"`
+}
+
+// Activate uploads detection for the token's node, flipping it to 'active'.
+// The server renders the pipeline from the submitted detection (full
+// fidelity) and returns it with the node's identity — one round trip.
+func (c *Client) Activate(ctx context.Context, req ActivateRequest) (ActivateResponse, error) {
+	var out ActivateResponse
+	resp, err := c.do(ctx, "POST", "/api/v1/nodes/activate", req)
 	if err != nil {
-		return "", "", "", "", err
+		return out, err
 	}
 	defer resp.Body.Close()
-	var out struct {
-		ID             string `json:"id"`
-		TenantID       string `json:"tenant_id"`
-		RemoteWriteURL string `json:"remote_write_url"`
-		IngestToken    string `json:"ingest_token"`
-	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", "", "", "", err
+		return out, err
 	}
-	if out.ID == "" {
-		return "", "", "", "", fmt.Errorf("control-plane returned no node id")
+	if out.NodeID == "" {
+		return out, fmt.Errorf("control-plane returned no node id")
 	}
-	if out.IngestToken == "" {
-		return "", "", "", "", fmt.Errorf("control-plane returned no ingest token")
+	if out.AlloyConfig == "" {
+		return out, fmt.Errorf("control-plane returned empty alloy config")
 	}
-	return out.ID, out.TenantID, out.RemoteWriteURL, out.IngestToken, nil
+	return out, nil
 }
 
 // NodeConfig is the agent-facing config payload.

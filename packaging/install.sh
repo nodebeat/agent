@@ -1,15 +1,26 @@
 #!/usr/bin/env bash
 # One-command NodeBeat agent install (systemd hosts).
 #
+# End users run ONLY this script (plus the portal's Add Node first for SaaS).
+# One invocation does everything, in order:
+#   1. pre-flight via the sibling nodebeat-onboard (aborts on FAIL unless
+#      --skip-checks; warns and continues when the binary is absent),
+#   2. install binary + unit + env,
+#   3. activate via nodebeat-agent enroll when --control-plane is given
+#      (needs the node ingest token; flips the portal node to 'active' and
+#      switches the unit to --enrolled server-pipeline mode).
+#
 #   sudo packaging/install.sh --bin ./bin/nodebeat-agent \
 #     --target 127.0.0.1 \
 #     --remote-write-url https://ingest.example:8428/api/v1/write \
-#     [--instance NAME] [--ingest-token TOKEN] [--el-rpc-port 8545 ...]
+#     [--instance NAME] [--ingest-token TOKEN | NODEBEAT_INGEST_TOKEN=... sudo -E ...] \
+#     [--control-plane https://app-dev.nodebeat.stream] [--chain ethereum] \
+#     [--skip-checks] [--el-rpc-port 8545 ...]
 #
 # Token via flag is convenient but leaks into history/ps; prefer
 # NODEBEAT_INGEST_TOKEN=... sudo -E packaging/install.sh ...
 #
-# Port overrides (devnet ephemeral host ports; see --help for the full list).
+# Port overrides (devnet ephemeral host ports; same names everywhere).
 # Unset = standard ports (metrics 0 = per detected client default).
 # Every NB_*_PORT is always written to agent.env so the systemd unit never
 # expands an empty flag value.
@@ -24,6 +35,7 @@ BIN=""; TARGET=""; RW_URL=""; INSTANCE=""; INGEST_TOKEN=""
 # Prefer env (avoids the secret in shell history / process list at install):
 #   NODEBEAT_INGEST_TOKEN=... sudo -E packaging/install.sh ...
 [ -n "${NODEBEAT_INGEST_TOKEN:-}" ] && INGEST_TOKEN="$NODEBEAT_INGEST_TOKEN"
+CONTROL_PLANE=""; CHAIN="ethereum"; SKIP_CHECKS=0
 EL_RPC_PORT=8545; BEACON_PORT=5052; EL_METRICS_PORT=0; CL_METRICS_PORT=0
 EL_P2P_PORT=30303; CL_P2P_PORT=9000
 COSMOS_RPC_PORT=26657; COSMOS_REST_PORT=1317; COSMOS_METRICS_PORT=0; COSMOS_P2P_PORT=26656
@@ -34,6 +46,9 @@ while [ $# -gt 0 ]; do
     --remote-write-url) RW_URL="$2"; shift 2 ;;
     --instance) INSTANCE="$2"; shift 2 ;;
     --ingest-token) INGEST_TOKEN="$2"; INGEST_TOKEN_FROM_FLAG=1; shift 2 ;;
+    --control-plane) CONTROL_PLANE="$2"; shift 2 ;;
+    --chain) CHAIN="$2"; shift 2 ;;
+    --skip-checks) SKIP_CHECKS=1; shift ;;
     --el-rpc-port) EL_RPC_PORT="$2"; shift 2 ;;
     --beacon-port) BEACON_PORT="$2"; shift 2 ;;
     --el-metrics-port) EL_METRICS_PORT="$2"; shift 2 ;;
@@ -49,6 +64,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+PORT_FLAGS="--el-rpc-port $EL_RPC_PORT --beacon-port $BEACON_PORT --el-metrics-port $EL_METRICS_PORT --cl-metrics-port $CL_METRICS_PORT --el-p2p-port $EL_P2P_PORT --cl-p2p-port $CL_P2P_PORT --cosmos-rpc-port $COSMOS_RPC_PORT --cosmos-rest-port $COSMOS_REST_PORT --cosmos-metrics-port $COSMOS_METRICS_PORT --cosmos-p2p-port $COSMOS_P2P_PORT"
+
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
 if [ "${INGEST_TOKEN_FROM_FLAG:-0}" = 1 ]; then
   echo "warning: --ingest-token exposes the secret in the process list and shell history; prefer NODEBEAT_INGEST_TOKEN env with sudo -E" >&2
@@ -63,6 +80,24 @@ command -v systemctl >/dev/null || { echo "systemd not found" >&2; exit 1; }
 command -v alloy >/dev/null || { echo "alloy not on PATH (same dir as the agent binary, or /usr/local/bin)" >&2; exit 1; }
 command -v ethereum-metrics-exporter >/dev/null || command -v cosmos-validator-watcher >/dev/null || {
   echo "no chain exporter on PATH (need ethereum-metrics-exporter and/or cosmos-validator-watcher)" >&2; exit 1; }
+
+# 1. Pre-flight via the sibling onboard binary (ships in the same tarball).
+# Child command is echoed first so failures are attributable, not hidden.
+case "$BIN" in
+  */*) BINDIR="$(cd "$(dirname "$BIN")" && pwd)" ;;
+  *) BINDIR="$(dirname "$(command -v "$BIN")")" ;;
+esac
+if [ "$SKIP_CHECKS" = 1 ]; then
+  echo "pre-flight skipped (--skip-checks)"
+elif [ -x "$BINDIR/nodebeat-onboard" ]; then
+  # shellcheck disable=SC2086
+  echo "+ $BINDIR/nodebeat-onboard --target $TARGET --chain $CHAIN $PORT_FLAGS"
+  # shellcheck disable=SC2086
+  "$BINDIR/nodebeat-onboard" --target "$TARGET" --chain "$CHAIN" $PORT_FLAGS --non-interactive
+  echo "pre-flight passed"
+else
+  echo "warning: no nodebeat-onboard next to $BIN; skipping pre-flight" >&2
+fi
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
@@ -93,6 +128,30 @@ NB_COSMOS_P2P_PORT=$COSMOS_P2P_PORT
 EOF
 chown root:nodebeat /etc/nodebeat/agent.env
 chmod 0640 /etc/nodebeat/agent.env
+
+DROPIN=/etc/systemd/system/nodebeat-agent.service.d/enrolled.conf
+if [ -n "$CONTROL_PLANE" ]; then
+  # 3. Activate: upload detection, flip the portal node to 'active', save
+  # enrollment.json. The unit then runs server-pipeline (--enrolled) mode.
+  [ -n "$INGEST_TOKEN" ] || { echo "--control-plane needs the node ingest token (--ingest-token or NODEBEAT_INGEST_TOKEN env; shown once at Add Node)" >&2; exit 2; }
+  install -d -m 0750 -o nodebeat -g nodebeat /var/lib/nodebeat
+  echo "+ nodebeat-agent enroll --control-plane $CONTROL_PLANE --target $TARGET --state-dir /var/lib/nodebeat (token redacted)"
+  # shellcheck disable=SC2086
+  sudo -u nodebeat env NODEBEAT_INGEST_TOKEN="$INGEST_TOKEN" \
+    /usr/local/bin/nodebeat-agent enroll --control-plane "$CONTROL_PLANE" \
+    --target "$TARGET" --state-dir /var/lib/nodebeat $PORT_FLAGS
+  install -d -m 0755 -o root -g root "$(dirname "$DROPIN")"
+  cat > "$DROPIN" <<EOF
+# Written by packaging/install.sh (enrolled mode). Removed on standalone installs.
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/nodebeat-agent run --enrolled --state-dir /var/lib/nodebeat
+EOF
+  echo "enrolled mode (server pipeline)"
+else
+  rm -f "$DROPIN"
+  rmdir --ignore-fail-on-non-empty "$(dirname "$DROPIN")" 2>/dev/null || true
+fi
 
 systemctl daemon-reload
 # restart (not start): re-running install on new flags must recycle the
