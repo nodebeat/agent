@@ -84,7 +84,10 @@ chown root:nodebeat /etc/nodebeat/agent.env
 chmod 0640 /etc/nodebeat/agent.env
 
 systemctl daemon-reload
-systemctl enable --now nodebeat-agent
+# restart (not start): re-running install on new flags must recycle the
+# already-running unit; on a fresh install restart simply starts it.
+systemctl enable nodebeat-agent
+systemctl restart nodebeat-agent
 sleep 3
 systemctl --no-pager --lines=5 status nodebeat-agent || true
 echo
