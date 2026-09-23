@@ -21,6 +21,8 @@ func runDetect(args []string) int {
 	exporterURL := fs.String("exporter-url", "", "bundled chain exporter /metrics URL on the agent host (default http://127.0.0.1:9090/metrics)")
 	instance := fs.String("instance", "", "instance label for all series (default: --target)")
 	out := fs.String("out", "config.alloy", "path to write the generated Alloy config")
+	var ports detect.Ports
+	detect.BindPortFlags(fs, &ports)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -33,7 +35,7 @@ func runDetect(args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	res, err := detect.Detect(ctx, *target)
+	res, err := detect.DetectWithPorts(ctx, *target, ports)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "detect:", err)
 		return 1

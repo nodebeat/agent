@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nodebeat/agent/internal/agent"
+	"github.com/nodebeat/agent/internal/detect"
 	"github.com/nodebeat/agent/internal/enroll"
 )
 
@@ -32,6 +33,8 @@ func runRun(args []string) int {
 	disableReporting := fs.Bool("disable-reporting", true, "pass --disable-reporting to Alloy (no usage telemetry)")
 	enrolled := fs.Bool("enrolled", false, "run from enrollment.json in --state-dir (created by `enroll`); fetches the server pipeline and polls it")
 	pollInterval := fs.Duration("poll-interval", 60*time.Second, "config poll interval in enrolled mode (also the server heartbeat)")
+	var ports detect.Ports
+	detect.BindPortFlags(fs, &ports)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -63,6 +66,7 @@ func runRun(args []string) int {
 		MetricsAddr:      *metricsAddr,
 		AlloyUIAddr:      *alloyUIAddr,
 		DisableReporting: *disableReporting,
+		Ports:            ports,
 	}, logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

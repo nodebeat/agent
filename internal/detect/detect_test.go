@@ -272,6 +272,51 @@ func TestDetectUnknownClientsStillRecorded(t *testing.T) {
 	}
 }
 
+func TestPortsWithDefaults(t *testing.T) {
+	p := Ports{ELMetrics: 1234}.WithDefaults()
+	if p.ELRPC != 8545 || p.Beacon != 5052 {
+		t.Errorf("discovery defaults not filled: %+v", p)
+	}
+	if p.ELP2P != 30303 || p.CLP2P != 9000 {
+		t.Errorf("p2p defaults not filled: %+v", p)
+	}
+	if p.CosmosRPC != 26657 || p.CosmosREST != 1317 || p.CosmosP2P != 26656 {
+		t.Errorf("cosmos defaults not filled: %+v", p)
+	}
+	if p.ELMetrics != 1234 || p.CLMetrics != 0 || p.CosmosMetrics != 0 {
+		t.Errorf("metrics overrides must survive WithDefaults: %+v", p)
+	}
+}
+
+func TestDetectMetricsPortOverride(t *testing.T) {
+	rpc := rpcServer(t, "Geth/v1.14.0-stable/linux-amd64/go1.22")
+	defer rpc.Close()
+	// geth path served on a non-standard (devnet-like) port
+	elM := metricsServer(t, "/debug/metrics/prometheus")
+	defer elM.Close()
+	beacon := beaconServer(t, "Lighthouse/v5.1.0/x86_64-linux")
+	defer beacon.Close()
+	clM := metricsServer(t, "/metrics")
+	defer clM.Close()
+
+	res, err := DetectWithPorts(context.Background(), "127.0.0.1", Ports{
+		ELRPC:     portOf(t, rpc.URL),
+		Beacon:    portOf(t, beacon.URL),
+		ELMetrics: portOf(t, elM.URL),
+		CLMetrics: portOf(t, clM.URL),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := endpointKinds(res)
+	if got := portOf(t, kinds[KindELMetrics]); got != portOf(t, elM.URL) {
+		t.Errorf("el-metrics override ignored: got %d", got)
+	}
+	if got := portOf(t, kinds[KindCLMetrics]); got != portOf(t, clM.URL) {
+		t.Errorf("cl-metrics override ignored: got %d", got)
+	}
+}
+
 func TestDetectNothing(t *testing.T) {
 	_, err := detectWith(context.Background(), "127.0.0.1",
 		Ports{ELRPC: freePort(t), Beacon: freePort(t)},

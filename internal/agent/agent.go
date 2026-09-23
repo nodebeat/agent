@@ -58,7 +58,10 @@ type Config struct {
 	MetricsAddr      string // default "127.0.0.1:19090" (localhost only)
 	AlloyUIAddr      string // default "127.0.0.1:12345" (localhost only)
 	DisableReporting bool   // pass --disable-reporting to Alloy
-	SuperviseOpts    supervise.Options
+	// Ports overrides target probing (devnet ephemeral host ports).
+	// Zero value = standard ports (metrics 0 = per-client default).
+	Ports         detect.Ports
+	SuperviseOpts supervise.Options
 }
 
 func (c Config) withDefaults() Config {
@@ -171,7 +174,7 @@ func (r *Runner) ManifestPath() string {
 func (r *Runner) Prepare(ctx context.Context) error {
 	dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	det, err := detect.Detect(dctx, r.cfg.Target)
+	det, err := detect.DetectWithPorts(dctx, r.cfg.Target, r.cfg.Ports)
 	if err != nil {
 		return err
 	}
@@ -307,7 +310,7 @@ func (r *Runner) Reload(ctx context.Context) error {
 	}
 	dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	det, err := detect.Detect(dctx, r.cfg.Target)
+	det, err := detect.DetectWithPorts(dctx, r.cfg.Target, r.cfg.Ports)
 	if err != nil {
 		return err
 	}

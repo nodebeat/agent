@@ -30,6 +30,8 @@ func runEnroll(args []string) int {
 	elEndpoint := fs.String("el-endpoint", "", "EL JSON-RPC URL (optional; auto-filled by detection)")
 	clEndpoint := fs.String("cl-endpoint", "", "CL Beacon API base URL (optional; auto-filled by detection)")
 	stateDir := fs.String("state-dir", ".nodebeat", "agent state dir; holds enrollment.json (0600)")
+	var ports detect.Ports
+	detect.BindPortFlags(fs, &ports)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -66,7 +68,7 @@ func runEnroll(args []string) int {
 	det := &detect.Result{Target: nodeName, Chain: strings.ToLower(*chain)}
 	if *target != "" {
 		dctx, dcancel := context.WithTimeout(ctx, 30*time.Second)
-		res, err := detect.Detect(dctx, *target)
+		res, err := detect.DetectWithPorts(dctx, *target, ports)
 		dcancel()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "enroll: detection failed (pass --chain/--el-endpoint/--cl-endpoint explicitly):", err)

@@ -35,16 +35,19 @@ func main() {
 		verbose        = flag.Bool("v", false, "verbose output")
 		nonInteractive = flag.Bool("non-interactive", false, "exit with code 1 on any failure")
 	)
+	var ports detect.Ports
+	detect.BindPortFlags(flag.CommandLine, &ports)
 	flag.Parse()
 
 	if *verbose {
 		log.SetFlags(log.LstdFlags | log.Lshortfile)
 	}
+	ports = ports.WithDefaults()
 
 	checks := []OnboardCheck{
 		{Name: "disk", Required: *checkDisk, Check: doCheckDiskSpace, Params: map[string]any{"threshold": *diskThreshold}},
 		{Name: "ntp", Required: *checkNTP, Check: doCheckNTP, Params: map[string]any{"threshold": *ntpThreshold}},
-		{Name: "p2p", Required: *checkP2P, Check: doCheckP2PPorts, Params: map[string]any{"chain": *chain}},
+		{Name: "p2p", Required: *checkP2P, Check: doCheckP2PPorts, Params: map[string]any{"chain": *chain, "elP2P": ports.ELP2P, "clP2P": ports.CLP2P, "cosmosP2P": ports.CosmosP2P}},
 		{Name: "static-ip", Required: *checkStaticIP, Check: doCheckStaticIP, Params: nil},
 	}
 
@@ -79,7 +82,7 @@ func main() {
 		fmt.Println("=== Cosmos Detection ===")
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		det, err := detect.Detect(ctx, *target)
+		det, err := detect.DetectWithPorts(ctx, *target, ports)
 		if err != nil {
 			fmt.Printf("  [cosmos-detect] FAIL - %v\n", err)
 			failed++
@@ -92,7 +95,7 @@ func main() {
 		fmt.Println("=== Ethereum Detection ===")
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		det, err := detect.Detect(ctx, *target)
+		det, err := detect.DetectWithPorts(ctx, *target, ports)
 		if err != nil {
 			fmt.Printf("  [eth-detect] FAIL - %v\n", err)
 			failed++
@@ -165,15 +168,28 @@ func doCheckP2PPorts(target string, params map[string]any) (bool, string) {
 			chain = s
 		}
 	}
+	// Port overrides (devnet ephemeral host ports); absent = standards.
+	elP2P, _ := params["elP2P"].(int)
+	if elP2P == 0 {
+		elP2P = 30303
+	}
+	clP2P, _ := params["clP2P"].(int)
+	if clP2P == 0 {
+		clP2P = 9000
+	}
+	cosmosP2P, _ := params["cosmosP2P"].(int)
+	if cosmosP2P == 0 {
+		cosmosP2P = 26656
+	}
 
 	var ports []int
 	switch strings.ToLower(chain) {
 	case "ethereum":
-		ports = []int{30303, 9000}
+		ports = []int{elP2P, clP2P}
 	case "cosmos":
-		ports = []int{26656}
+		ports = []int{cosmosP2P}
 	default:
-		ports = []int{30303, 26656, 9000}
+		ports = []int{elP2P, cosmosP2P, clP2P}
 	}
 
 	var failed []string

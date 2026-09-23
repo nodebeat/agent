@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net"
 	"net/http"
@@ -38,22 +39,83 @@ const (
 )
 
 // Ports holds the discovery ports for Ethereum and Cosmos.
-// Defaults match the common client layout; tests override them.
+// Discovery, P2P and Cosmos-metrics fields match the standard client layout.
+// ELMetrics/CLMetrics/CosmosMetrics are overrides: 0 means "per detected
+// client default" (EL 6060/9001/9545, CL 5054/8008/8080, CometBFT 26660).
+// The override exists for Docker/Kurtosis devnets, where the host-side ports
+// are ephemeral: pass the inspected mappings instead of forwarding standard
+// ports with socat. Production keeps the defaults (unset = standard).
 type Ports struct {
-	ELRPC      int // Ethereum JSON-RPC (default 8545)
-	Beacon     int // Beacon Node API (default 5052)
-	CosmosRPC  int // CometBFT RPC (default 26657)
-	CosmosREST int // Cosmos REST API (default 1317)
+	ELRPC         int // Ethereum JSON-RPC (default 8545)
+	Beacon        int // Beacon Node API (default 5052)
+	ELMetrics     int // EL native metrics override (default 0 = per-client default)
+	CLMetrics     int // CL native metrics override (default 0 = per-client default)
+	ELP2P         int // EL P2P TCP (default 30303; onboard check only)
+	CLP2P         int // CL P2P TCP (default 9000; onboard check only)
+	CosmosRPC     int // CometBFT RPC (default 26657)
+	CosmosREST    int // Cosmos REST API (default 1317)
+	CosmosMetrics int // CometBFT metrics override (default 0 = 26660)
+	CosmosP2P     int // CometBFT P2P TCP (default 26656; onboard check only)
 }
 
 // DefaultPorts returns the standard discovery ports.
 func DefaultPorts() Ports {
 	return Ports{
-		ELRPC:      8545,
-		Beacon:     5052,
-		CosmosRPC:  26657,
-		CosmosREST: 1317,
+		ELRPC:         8545,
+		Beacon:        5052,
+		ELMetrics:     0,
+		CLMetrics:     0,
+		ELP2P:         30303,
+		CLP2P:         9000,
+		CosmosRPC:     26657,
+		CosmosREST:    1317,
+		CosmosMetrics: 0,
+		CosmosP2P:     26656,
 	}
+}
+
+// WithDefaults fills every zero discovery/P2P field with its standard port.
+// Metrics overrides keep 0 (= per-client default).
+func (p Ports) WithDefaults() Ports {
+	d := DefaultPorts()
+	if p.ELRPC == 0 {
+		p.ELRPC = d.ELRPC
+	}
+	if p.Beacon == 0 {
+		p.Beacon = d.Beacon
+	}
+	if p.ELP2P == 0 {
+		p.ELP2P = d.ELP2P
+	}
+	if p.CLP2P == 0 {
+		p.CLP2P = d.CLP2P
+	}
+	if p.CosmosRPC == 0 {
+		p.CosmosRPC = d.CosmosRPC
+	}
+	if p.CosmosREST == 0 {
+		p.CosmosREST = d.CosmosREST
+	}
+	if p.CosmosP2P == 0 {
+		p.CosmosP2P = d.CosmosP2P
+	}
+	return p
+}
+
+// BindPortFlags registers the --*-port override flags on fs, writing into p.
+// One helper so detect/run/enroll/onboard expose identical flags. Unset =
+// standard ports (metrics 0 = per detected client default).
+func BindPortFlags(fs *flag.FlagSet, p *Ports) {
+	fs.IntVar(&p.ELRPC, "el-rpc-port", 8545, "EL JSON-RPC port on the target host")
+	fs.IntVar(&p.Beacon, "beacon-port", 5052, "CL Beacon API port on the target host")
+	fs.IntVar(&p.ELMetrics, "el-metrics-port", 0, "EL native metrics port override (0 = per detected client default)")
+	fs.IntVar(&p.CLMetrics, "cl-metrics-port", 0, "CL native metrics port override (0 = per detected client default)")
+	fs.IntVar(&p.ELP2P, "el-p2p-port", 30303, "EL P2P TCP port on the target host (onboard check)")
+	fs.IntVar(&p.CLP2P, "cl-p2p-port", 9000, "CL P2P TCP port on the target host (onboard check)")
+	fs.IntVar(&p.CosmosRPC, "cosmos-rpc-port", 26657, "CometBFT RPC port on the target host")
+	fs.IntVar(&p.CosmosREST, "cosmos-rest-port", 1317, "Cosmos REST port on the target host")
+	fs.IntVar(&p.CosmosMetrics, "cosmos-metrics-port", 0, "CometBFT metrics port override (0 = 26660)")
+	fs.IntVar(&p.CosmosP2P, "cosmos-p2p-port", 26656, "CometBFT P2P TCP port on the target host (onboard check)")
 }
 
 // metricsEndpoint is a client's native Prometheus endpoint.
@@ -153,7 +215,13 @@ func IdentifyCosmos(version string) string {
 // Detect probes target with the default ports and reports what it finds.
 // It returns an error only when nothing chain-related is detected at all.
 func Detect(ctx context.Context, target string) (*Result, error) {
-	return detectWith(ctx, target, DefaultPorts(), nil, nil, nil)
+	return DetectWithPorts(ctx, target, DefaultPorts())
+}
+
+// DetectWithPorts probes target with explicit port overrides and reports
+// what it finds. Zero metrics fields mean per-client defaults.
+func DetectWithPorts(ctx context.Context, target string, ports Ports) (*Result, error) {
+	return detectWith(ctx, target, ports.WithDefaults(), nil, nil, nil)
 }
 
 func detectWith(ctx context.Context, target string, ports Ports, customEL, customCL, customCometBFT map[string]metricsEndpoint) (*Result, error) {
@@ -180,8 +248,8 @@ func detectWith(ctx context.Context, target string, ports Ports, customEL, custo
 		res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindELRPC, URL: rpcURL})
 		if name := IdentifyEL(version); name != "" {
 			res.ELClient = name
-			if me, ok := elM[name]; ok {
-				if u := metricsURL(target, me); reachable(ctx, httpClient, u) {
+			if u, ok := overriddenMetricsURL(target, name, ports.ELMetrics, elM); ok {
+				if reachable(ctx, httpClient, u) {
 					res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindELMetrics, URL: u})
 				}
 			}
@@ -195,8 +263,8 @@ func detectWith(ctx context.Context, target string, ports Ports, customEL, custo
 		res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindCLBeacon, URL: beaconBase})
 		if name := IdentifyCL(version); name != "" {
 			res.CLClient = name
-			if me, ok := clM[name]; ok {
-				if u := metricsURL(target, me); reachable(ctx, httpClient, u) {
+			if u, ok := overriddenMetricsURL(target, name, ports.CLMetrics, clM); ok {
+				if reachable(ctx, httpClient, u) {
 					res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindCLMetrics, URL: u})
 				}
 			}
@@ -211,8 +279,8 @@ func detectWith(ctx context.Context, target string, ports Ports, customEL, custo
 		}
 		res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindCosmosRPC, URL: cosmosRPC})
 		if name := IdentifyCosmos(version); name != "" {
-			if me, ok := cometBFTM[name]; ok {
-				if u := metricsURL(target, me); reachable(ctx, httpClient, u) {
+			if u, ok := overriddenMetricsURL(target, name, ports.CosmosMetrics, cometBFTM); ok {
+				if reachable(ctx, httpClient, u) {
 					res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindCosmosMetrics, URL: u})
 				}
 			}
@@ -235,6 +303,21 @@ func detectWith(ctx context.Context, target string, ports Ports, customEL, custo
 
 func metricsURL(target string, me metricsEndpoint) string {
 	return "http://" + net.JoinHostPort(target, strconv.Itoa(me.Port)) + me.Path
+}
+
+// overriddenMetricsURL resolves the native metrics URL for a detected client.
+// A nonzero override port replaces the table port but keeps the client's
+// path (paths are client-fixed; only devnet host ports shift). ok is false
+// when the client is unknown to the table.
+func overriddenMetricsURL(target, client string, override int, table map[string]metricsEndpoint) (u string, ok bool) {
+	me, ok := table[client]
+	if !ok {
+		return "", false
+	}
+	if override != 0 {
+		me.Port = override
+	}
+	return metricsURL(target, me), true
 }
 
 // probeJSONRPCClientVersion calls web3_clientVersion on an EL JSON-RPC URL.
