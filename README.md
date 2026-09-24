@@ -18,8 +18,8 @@ go run ./cmd/nodebeat-agent run --target 10.0.1.5 \
   --state-dir .nodebeat
 
 # SaaS mode (portal Add Node first — ingest token shown once; token via env, never a flag)
-export NODEBEAT_TOKEN=$NB_INGEST_TOKEN
-nodebeat-agent enroll --control-plane https://api.nodebeat.stream \
+export NODEBEAT_INGEST_TOKEN=$NB_INGEST_TOKEN
+nodebeat-agent enroll --control-plane https://app.nodebeat.stream \
   --target 10.0.1.5 --state-dir .nodebeat
 nodebeat-agent run --enrolled --state-dir .nodebeat
 ```

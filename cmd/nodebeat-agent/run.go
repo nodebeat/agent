@@ -63,7 +63,7 @@ func runRun(args []string) int {
 		Target:           *target,
 		RemoteWriteURL:   *remoteWriteURL,
 		Instance:         *instance,
-		IngestToken:      firstNonEmpty(*ingestToken, os.Getenv("NODEBEAT_INGEST_TOKEN")),
+		IngestToken:      firstNonEmpty(*ingestToken, os.Getenv("NODEBEAT_INGEST_TOKEN"), os.Getenv("NODEBEAT_TOKEN")),
 		ExporterBin:      *exporterBin,
 		AlloyBin:         *alloyBin,
 		ExporterPort:     *exporterPort,

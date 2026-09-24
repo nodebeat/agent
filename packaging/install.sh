@@ -34,7 +34,9 @@ set -euo pipefail
 BIN=""; TARGET=""; RW_URL=""; INSTANCE=""; INGEST_TOKEN=""
 # Prefer env (avoids the secret in shell history / process list at install):
 #   NODEBEAT_INGEST_TOKEN=... sudo -E packaging/install.sh ...
+# NODEBEAT_TOKEN is accepted as a legacy fallback (old portal/docs snippet).
 [ -n "${NODEBEAT_INGEST_TOKEN:-}" ] && INGEST_TOKEN="$NODEBEAT_INGEST_TOKEN"
+[ -z "$INGEST_TOKEN" ] && [ -n "${NODEBEAT_TOKEN:-}" ] && INGEST_TOKEN="$NODEBEAT_TOKEN"
 CONTROL_PLANE=""; CHAIN=""; SKIP_CHECKS=0
 EL_RPC_PORT=8545; BEACON_PORT=5052; EL_METRICS_PORT=0; CL_METRICS_PORT=0
 EL_P2P_PORT=30303; CL_P2P_PORT=9000

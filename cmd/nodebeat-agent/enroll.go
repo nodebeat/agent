@@ -46,7 +46,7 @@ func runEnroll(args []string) int {
 		fs.Usage()
 		return 2
 	}
-	token := firstNonEmpty(*ingestToken, os.Getenv("NODEBEAT_INGEST_TOKEN"))
+	token := firstNonEmpty(*ingestToken, os.Getenv("NODEBEAT_INGEST_TOKEN"), os.Getenv("NODEBEAT_TOKEN"))
 	if token == "" {
 		fmt.Fprintln(os.Stderr, "enroll: a node ingest token is required (--ingest-token or NODEBEAT_INGEST_TOKEN env; shown once at Add Node / rotation)")
 		fs.Usage()
