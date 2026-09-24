@@ -35,7 +35,7 @@ Binaries: `nodebeat-agent` (supervisor) and `nodebeat-onboard` (pre-flight check
 * **Worst case of compromise:** metrics leak only. See `docs/THREAT_MODEL.md`.
 * **Uninstall:** `sudo packaging/uninstall.sh` removes binary, systemd unit, and firewall rule — nothing left.
 
-One agent run monitors one chain. An Ethereum EL+CL pair counts as one chain (single `ethereum-metrics-exporter` with `--execution-url` + `--consensus-url`). For two different chains on one host (e.g. Ethereum + Cosmos), run twice with disjoint `--state-dir`, `--exporter-port`, `--metrics-addr`, and `--alloy-ui-addr`.
+One agent run monitors one chain. An Ethereum EL+CL pair counts as one chain (single `ethereum-metrics-exporter` with `--execution-url` + `--consensus-url`). For two different chains on one host (e.g. Ethereum + Cosmos), run twice with disjoint `--state-dir`, `--exporter-port`, `--metrics-addr`, and `--alloy-ui-addr`, plus `--chain ethereum` / `--chain cosmos` per instance (empty = auto-detect all families, which misattributes mixed hosts — Ethereum wins and Cosmos duties are missed).
 
 ## Layout
 
