@@ -187,7 +187,7 @@ func TestDetectFullNode(t *testing.T) {
 	defer clM.Close()
 
 	res, err := detectWith(context.Background(), "127.0.0.1",
-		Ports{ELRPC: portOf(t, rpc.URL), Beacon: portOf(t, beacon.URL)},
+		Ports{ELRPC: portOf(t, rpc.URL), Beacon: portOf(t, beacon.URL)}, "",
 		map[string]metricsEndpoint{
 			"geth": {Port: portOf(t, elM.URL), Path: "/debug/metrics/prometheus"},
 		},
@@ -225,7 +225,7 @@ func TestDetectELOnlyMetricsClosed(t *testing.T) {
 	defer rpc.Close()
 
 	res, err := detectWith(context.Background(), "127.0.0.1",
-		Ports{ELRPC: portOf(t, rpc.URL), Beacon: freePort(t)},
+		Ports{ELRPC: portOf(t, rpc.URL), Beacon: freePort(t)}, "",
 		map[string]metricsEndpoint{
 			"reth": {Port: freePort(t), Path: "/metrics"},
 		},
@@ -255,7 +255,7 @@ func TestDetectUnknownClientsStillRecorded(t *testing.T) {
 	defer beacon.Close()
 
 	res, err := detectWith(context.Background(), "127.0.0.1",
-		Ports{ELRPC: freePort(t), Beacon: portOf(t, beacon.URL)},
+		Ports{ELRPC: freePort(t), Beacon: portOf(t, beacon.URL)}, "",
 		nil,
 		nil,
 		nil,
@@ -317,9 +317,51 @@ func TestDetectMetricsPortOverride(t *testing.T) {
 	}
 }
 
+func TestDetectChainFilter(t *testing.T) {
+	rpc := rpcServer(t, "Geth/v1.14.0-stable/linux-amd64/go1.22")
+	defer rpc.Close()
+	cosmosRPC := cometBFTRPCServer(t, "cometbft/1.0.0")
+	defer cosmosRPC.Close()
+	ports := Ports{
+		ELRPC: portOf(t, rpc.URL), Beacon: freePort(t),
+		CosmosRPC: portOf(t, cosmosRPC.URL), CosmosREST: freePort(t),
+	}
+
+	eth, err := DetectFiltered(context.Background(), "127.0.0.1", ports, ChainEthereum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eth.Chain != ChainEthereum {
+		t.Errorf("chain = %q, want ethereum", eth.Chain)
+	}
+	for k := range endpointKinds(eth) {
+		if k == KindCosmosRPC || k == KindCosmosREST || k == KindCosmosMetrics {
+			t.Errorf("ethereum filter leaked cosmos endpoint %q", k)
+		}
+	}
+
+	cosmos, err := DetectFiltered(context.Background(), "127.0.0.1", ports, ChainCosmos)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cosmos.Chain != ChainCosmos {
+		t.Errorf("chain = %q, want cosmos", cosmos.Chain)
+	}
+	for k := range endpointKinds(cosmos) {
+		if k == KindELRPC || k == KindELMetrics || k == KindCLBeacon || k == KindCLMetrics {
+			t.Errorf("cosmos filter leaked ethereum endpoint %q", k)
+		}
+	}
+
+	if _, err := DetectFiltered(context.Background(), "127.0.0.1",
+		Ports{ELRPC: freePort(t), CosmosRPC: freePort(t)}, ChainEthereum); err == nil {
+		t.Error("expected error filtering ethereum on empty host, got nil")
+	}
+}
+
 func TestDetectNothing(t *testing.T) {
 	_, err := detectWith(context.Background(), "127.0.0.1",
-		Ports{ELRPC: freePort(t), Beacon: freePort(t)},
+		Ports{ELRPC: freePort(t), Beacon: freePort(t)}, "",
 		nil,
 		nil,
 		nil,
@@ -342,6 +384,7 @@ func TestDetectCosmosFullNode(t *testing.T) {
 			CosmosRPC:  portOf(t, cosmosRPC.URL),
 			CosmosREST: portOf(t, cosmosREST.URL),
 		},
+		"",
 		nil,
 		nil,
 		map[string]metricsEndpoint{
@@ -368,6 +411,7 @@ func TestDetectCosmosRPCOnly(t *testing.T) {
 
 	res, err := detectWith(context.Background(), "127.0.0.1",
 		Ports{CosmosRPC: portOf(t, cosmosRPC.URL), CosmosREST: freePort(t)},
+		"",
 		nil,
 		nil,
 		nil,

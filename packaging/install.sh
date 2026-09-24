@@ -35,7 +35,7 @@ BIN=""; TARGET=""; RW_URL=""; INSTANCE=""; INGEST_TOKEN=""
 # Prefer env (avoids the secret in shell history / process list at install):
 #   NODEBEAT_INGEST_TOKEN=... sudo -E packaging/install.sh ...
 [ -n "${NODEBEAT_INGEST_TOKEN:-}" ] && INGEST_TOKEN="$NODEBEAT_INGEST_TOKEN"
-CONTROL_PLANE=""; CHAIN="ethereum"; SKIP_CHECKS=0
+CONTROL_PLANE=""; CHAIN=""; SKIP_CHECKS=0
 EL_RPC_PORT=8545; BEACON_PORT=5052; EL_METRICS_PORT=0; CL_METRICS_PORT=0
 EL_P2P_PORT=30303; CL_P2P_PORT=9000
 COSMOS_RPC_PORT=26657; COSMOS_REST_PORT=1317; COSMOS_METRICS_PORT=0; COSMOS_P2P_PORT=26656
@@ -90,10 +90,13 @@ esac
 if [ "$SKIP_CHECKS" = 1 ]; then
   echo "pre-flight skipped (--skip-checks)"
 elif [ -x "$BINDIR/nodebeat-onboard" ]; then
+  # --chain picks the P2P port set (onboard default ethereum); empty = default.
+  ONBOARD_CHAIN_FLAGS=""
+  [ -n "$CHAIN" ] && ONBOARD_CHAIN_FLAGS="--chain $CHAIN"
   # shellcheck disable=SC2086
-  echo "+ $BINDIR/nodebeat-onboard --target $TARGET --chain $CHAIN $PORT_FLAGS"
+  echo "+ $BINDIR/nodebeat-onboard --target $TARGET $ONBOARD_CHAIN_FLAGS $PORT_FLAGS"
   # shellcheck disable=SC2086
-  "$BINDIR/nodebeat-onboard" --target "$TARGET" --chain "$CHAIN" $PORT_FLAGS --non-interactive
+  "$BINDIR/nodebeat-onboard" --target "$TARGET" $ONBOARD_CHAIN_FLAGS $PORT_FLAGS --non-interactive
   echo "pre-flight passed"
 else
   echo "warning: no nodebeat-onboard next to $BIN; skipping pre-flight" >&2
@@ -115,6 +118,7 @@ NB_TARGET=$TARGET
 NB_REMOTE_WRITE_URL=$RW_URL
 NB_INSTANCE=$INSTANCE
 NB_INGEST_TOKEN=$INGEST_TOKEN
+NB_CHAIN=$CHAIN
 NB_EL_RPC_PORT=$EL_RPC_PORT
 NB_BEACON_PORT=$BEACON_PORT
 NB_EL_METRICS_PORT=$EL_METRICS_PORT
@@ -135,11 +139,14 @@ if [ -n "$CONTROL_PLANE" ]; then
   # enrollment.json. The unit then runs server-pipeline (--enrolled) mode.
   [ -n "$INGEST_TOKEN" ] || { echo "--control-plane needs the node ingest token (--ingest-token or NODEBEAT_INGEST_TOKEN env; shown once at Add Node)" >&2; exit 2; }
   install -d -m 0750 -o nodebeat -g nodebeat /var/lib/nodebeat
+  # --chain enumerates detection to one family on mixed hosts (empty = auto).
+  ENROLL_CHAIN_FLAGS=""
+  [ -n "$CHAIN" ] && ENROLL_CHAIN_FLAGS="--chain $CHAIN"
   echo "+ nodebeat-agent enroll --control-plane $CONTROL_PLANE --target $TARGET --state-dir /var/lib/nodebeat (token redacted)"
   # shellcheck disable=SC2086
   sudo -u nodebeat env NODEBEAT_INGEST_TOKEN="$INGEST_TOKEN" \
     /usr/local/bin/nodebeat-agent enroll --control-plane "$CONTROL_PLANE" \
-    --target "$TARGET" --state-dir /var/lib/nodebeat $PORT_FLAGS
+    --target "$TARGET" --state-dir /var/lib/nodebeat $ENROLL_CHAIN_FLAGS $PORT_FLAGS
   install -d -m 0755 -o root -g root "$(dirname "$DROPIN")"
   cat > "$DROPIN" <<EOF
 # Written by packaging/install.sh (enrolled mode). Removed on standalone installs.

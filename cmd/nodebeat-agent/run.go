@@ -33,9 +33,15 @@ func runRun(args []string) int {
 	disableReporting := fs.Bool("disable-reporting", true, "pass --disable-reporting to Alloy (no usage telemetry)")
 	enrolled := fs.Bool("enrolled", false, "run from enrollment.json in --state-dir (created by `enroll`); fetches the server pipeline and polls it")
 	pollInterval := fs.Duration("poll-interval", 60*time.Second, "config poll interval in enrolled mode (also the server heartbeat)")
+	chainFlag := fs.String("chain", "", "restrict detection to ethereum or cosmos (empty = auto; use per instance on mixed hosts)")
 	var ports detect.Ports
 	detect.BindPortFlags(fs, &ports)
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	chain, err := detect.ParseChainFilter(*chainFlag)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "run:", err)
 		return 2
 	}
 
@@ -67,6 +73,7 @@ func runRun(args []string) int {
 		AlloyUIAddr:      *alloyUIAddr,
 		DisableReporting: *disableReporting,
 		Ports:            ports,
+		Chain:            chain,
 	}, logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

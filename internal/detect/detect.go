@@ -218,13 +218,32 @@ func Detect(ctx context.Context, target string) (*Result, error) {
 	return DetectWithPorts(ctx, target, DefaultPorts())
 }
 
+// ParseChainFilter normalizes a --chain flag for DetectFiltered: ""
+// (auto-detect all families), "ethereum", or "cosmos".
+func ParseChainFilter(c string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(c)) {
+	case "", ChainEthereum, ChainCosmos:
+		return strings.ToLower(strings.TrimSpace(c)), nil
+	default:
+		return "", fmt.Errorf("unsupported chain %q: use ethereum or cosmos (empty = auto)", c)
+	}
+}
+
 // DetectWithPorts probes target with explicit port overrides and reports
 // what it finds. Zero metrics fields mean per-client defaults.
 func DetectWithPorts(ctx context.Context, target string, ports Ports) (*Result, error) {
-	return detectWith(ctx, target, ports.WithDefaults(), nil, nil, nil)
+	return DetectFiltered(ctx, target, ports, "")
 }
 
-func detectWith(ctx context.Context, target string, ports Ports, customEL, customCL, customCometBFT map[string]metricsEndpoint) (*Result, error) {
+// DetectFiltered probes target like DetectWithPorts but restricts probing
+// to one chain family ("ethereum" or "cosmos") when chain is non-empty —
+// for hosts running both, where each agent instance handles one chain.
+// Empty chain probes all families (current behavior).
+func DetectFiltered(ctx context.Context, target string, ports Ports, chain string) (*Result, error) {
+	return detectWith(ctx, target, ports.WithDefaults(), strings.ToLower(strings.TrimSpace(chain)), nil, nil, nil)
+}
+
+func detectWith(ctx context.Context, target string, ports Ports, chain string, customEL, customCL, customCometBFT map[string]metricsEndpoint) (*Result, error) {
 	// Use custom maps if provided, otherwise use defaults
 	elM := elMetricsEndpoints
 	if customEL != nil {
@@ -240,57 +259,63 @@ func detectWith(ctx context.Context, target string, ports Ports, customEL, custo
 	}
 	httpClient := &http.Client{Timeout: 3 * time.Second}
 	res := &Result{Target: target}
+	wantEth := chain == "" || chain == ChainEthereum
+	wantCosmos := chain == "" || chain == ChainCosmos
 
 	// Try Ethereum EL
-	rpcURL := "http://" + net.JoinHostPort(target, strconv.Itoa(ports.ELRPC))
-	if version, err := probeJSONRPCClientVersion(ctx, httpClient, rpcURL); err == nil {
-		res.Chain = ChainEthereum
-		res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindELRPC, URL: rpcURL})
-		if name := IdentifyEL(version); name != "" {
-			res.ELClient = name
-			if u, ok := overriddenMetricsURL(target, name, ports.ELMetrics, elM); ok {
-				if reachable(ctx, httpClient, u) {
-					res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindELMetrics, URL: u})
+	if wantEth {
+		rpcURL := "http://" + net.JoinHostPort(target, strconv.Itoa(ports.ELRPC))
+		if version, err := probeJSONRPCClientVersion(ctx, httpClient, rpcURL); err == nil {
+			res.Chain = ChainEthereum
+			res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindELRPC, URL: rpcURL})
+			if name := IdentifyEL(version); name != "" {
+				res.ELClient = name
+				if u, ok := overriddenMetricsURL(target, name, ports.ELMetrics, elM); ok {
+					if reachable(ctx, httpClient, u) {
+						res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindELMetrics, URL: u})
+					}
 				}
 			}
 		}
-	}
 
-	// Try Ethereum CL
-	beaconBase := "http://" + net.JoinHostPort(target, strconv.Itoa(ports.Beacon))
-	if version, err := probeBeaconNodeVersion(ctx, httpClient, beaconBase+"/eth/v1/node/version"); err == nil {
-		res.Chain = ChainEthereum
-		res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindCLBeacon, URL: beaconBase})
-		if name := IdentifyCL(version); name != "" {
-			res.CLClient = name
-			if u, ok := overriddenMetricsURL(target, name, ports.CLMetrics, clM); ok {
-				if reachable(ctx, httpClient, u) {
-					res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindCLMetrics, URL: u})
+		// Try Ethereum CL
+		beaconBase := "http://" + net.JoinHostPort(target, strconv.Itoa(ports.Beacon))
+		if version, err := probeBeaconNodeVersion(ctx, httpClient, beaconBase+"/eth/v1/node/version"); err == nil {
+			res.Chain = ChainEthereum
+			res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindCLBeacon, URL: beaconBase})
+			if name := IdentifyCL(version); name != "" {
+				res.CLClient = name
+				if u, ok := overriddenMetricsURL(target, name, ports.CLMetrics, clM); ok {
+					if reachable(ctx, httpClient, u) {
+						res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindCLMetrics, URL: u})
+					}
 				}
 			}
 		}
 	}
 
 	// Try Cosmos (CometBFT) - probe RPC first
-	cosmosRPC := "http://" + net.JoinHostPort(target, strconv.Itoa(ports.CosmosRPC))
-	if version, err := probeCometBFTRPC(ctx, httpClient, cosmosRPC); err == nil {
-		if res.Chain == "" {
-			res.Chain = ChainCosmos
-		}
-		res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindCosmosRPC, URL: cosmosRPC})
-		if name := IdentifyCosmos(version); name != "" {
-			if u, ok := overriddenMetricsURL(target, name, ports.CosmosMetrics, cometBFTM); ok {
-				if reachable(ctx, httpClient, u) {
-					res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindCosmosMetrics, URL: u})
+	if wantCosmos {
+		cosmosRPC := "http://" + net.JoinHostPort(target, strconv.Itoa(ports.CosmosRPC))
+		if version, err := probeCometBFTRPC(ctx, httpClient, cosmosRPC); err == nil {
+			if res.Chain == "" {
+				res.Chain = ChainCosmos
+			}
+			res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindCosmosRPC, URL: cosmosRPC})
+			if name := IdentifyCosmos(version); name != "" {
+				if u, ok := overriddenMetricsURL(target, name, ports.CosmosMetrics, cometBFTM); ok {
+					if reachable(ctx, httpClient, u) {
+						res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindCosmosMetrics, URL: u})
+					}
 				}
 			}
-		}
-		// Also probe REST for additional info
-		cosmosREST := "http://" + net.JoinHostPort(target, strconv.Itoa(ports.CosmosREST))
-		if version2, err := probeCosmosREST(ctx, httpClient, cosmosREST); err == nil {
-			res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindCosmosREST, URL: cosmosREST})
-			if name := IdentifyCosmos(version2); name != "" {
-				// REST doesn't have native metrics endpoint beyond what RPC gives
+			// Also probe REST for additional info
+			cosmosREST := "http://" + net.JoinHostPort(target, strconv.Itoa(ports.CosmosREST))
+			if version2, err := probeCosmosREST(ctx, httpClient, cosmosREST); err == nil {
+				res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindCosmosREST, URL: cosmosREST})
+				if name := IdentifyCosmos(version2); name != "" {
+					// REST doesn't have native metrics endpoint beyond what RPC gives
+				}
 			}
 		}
 	}

@@ -29,10 +29,16 @@ func runEnroll(args []string) int {
 	ingestToken := fs.String("ingest-token", "", "node ingest token nb_ingest_... (or NODEBEAT_INGEST_TOKEN env); shown once at Add Node / rotation")
 	target := fs.String("target", "", "node hostname or IP to auto-detect (required)")
 	hostname := fs.String("hostname", "", "reported hostname shown in the portal (default: OS hostname)")
+	chainFlag := fs.String("chain", "", "restrict detection to ethereum or cosmos (empty = auto; use per instance on mixed hosts)")
 	stateDir := fs.String("state-dir", ".nodebeat", "agent state dir; holds enrollment.json (0600)")
 	var ports detect.Ports
 	detect.BindPortFlags(fs, &ports)
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	chain, err := detect.ParseChainFilter(*chainFlag)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "enroll:", err)
 		return 2
 	}
 	if *controlPlane == "" {
@@ -65,7 +71,7 @@ func runEnroll(args []string) int {
 	defer cancel()
 
 	dctx, dcancel := context.WithTimeout(ctx, 30*time.Second)
-	det, err := detect.DetectWithPorts(dctx, *target, ports)
+	det, err := detect.DetectFiltered(dctx, *target, ports, chain)
 	dcancel()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "enroll: detection failed:", err)

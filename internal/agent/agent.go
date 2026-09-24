@@ -60,7 +60,11 @@ type Config struct {
 	DisableReporting bool   // pass --disable-reporting to Alloy
 	// Ports overrides target probing (devnet ephemeral host ports).
 	// Zero value = standard ports (metrics 0 = per-client default).
-	Ports         detect.Ports
+	Ports detect.Ports
+	// Chain restricts detection to one family ("ethereum"/"cosmos") on
+	// mixed hosts where each agent instance handles one chain. Empty =
+	// probe all families.
+	Chain         string
 	SuperviseOpts supervise.Options
 }
 
@@ -174,7 +178,7 @@ func (r *Runner) ManifestPath() string {
 func (r *Runner) Prepare(ctx context.Context) error {
 	dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	det, err := detect.DetectWithPorts(dctx, r.cfg.Target, r.cfg.Ports)
+	det, err := detect.DetectFiltered(dctx, r.cfg.Target, r.cfg.Ports, r.cfg.Chain)
 	if err != nil {
 		return err
 	}
@@ -310,7 +314,7 @@ func (r *Runner) Reload(ctx context.Context) error {
 	}
 	dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	det, err := detect.DetectWithPorts(dctx, r.cfg.Target, r.cfg.Ports)
+	det, err := detect.DetectFiltered(dctx, r.cfg.Target, r.cfg.Ports, r.cfg.Chain)
 	if err != nil {
 		return err
 	}
