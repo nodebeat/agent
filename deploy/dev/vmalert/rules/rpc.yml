@@ -72,6 +72,31 @@ groups:
           and on (instance, method)
           rate(reth_rpc_server_calls_time_seconds_count[2m]) > 0
 
+      # Percentiles for the dashboards (US-1.16): the quantiles both clients
+      # publish per method. Not a heatmap source: Geth and Reth expose
+      # summaries (precomputed quantiles), not histogram buckets, and
+      # quantiles cannot be merged across methods or scrapes. Same
+      # idle-interval gating as the p99 record above.
+      - record: nodebeat:rpc_latency:seconds
+        expr: |
+          label_replace(label_replace(
+            {__name__=~"rpc_duration_.+_(success|failure)", quantile=~"0.5|0.95|0.99"},
+            "method", "$1", "__name__", "rpc_duration_(.+)_(success|failure)"),
+            "outcome", "$2", "__name__", "rpc_duration_(.+)_(success|failure)") / 1e9
+          and on (instance, method, outcome)
+          label_replace(label_replace(
+            {__name__=~"rpc_duration_.+_(success|failure)_count"} > 0,
+            "method", "$1", "__name__", "rpc_duration_(.+)_(success|failure)_count"),
+            "outcome", "$2", "__name__", "rpc_duration_(.+)_(success|failure)_count")
+
+      - record: nodebeat:rpc_latency:seconds
+        expr: |
+          label_replace(
+            reth_rpc_server_calls_time_seconds{quantile=~"0.5|0.95|0.99"} > 0,
+            "outcome", "all", "", "")
+          and on (instance, method)
+          rate(reth_rpc_server_calls_time_seconds_count[2m]) > 0
+
   - name: rpc-standard
     interval: 30s
     rules:

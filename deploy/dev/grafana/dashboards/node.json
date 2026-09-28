@@ -47,6 +47,27 @@
         "refresh": 2,
         "sort": 1,
         "current": {}
+      },
+      {
+        "name": "method",
+        "label": "RPC method",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "victoriametrics"
+        },
+        "definition": "query_result(sort_desc(sum by (method) (nodebeat:rpc_calls:rate2m{instance=\"$instance\"}) > 0))",
+        "query": {
+          "query": "query_result(sort_desc(sum by (method) (nodebeat:rpc_calls:rate2m{instance=\"$instance\"}) > 0))",
+          "refId": "method"
+        },
+        "includeAll": false,
+        "multi": false,
+        "refresh": 2,
+        "sort": 0,
+        "current": {},
+        "regex": "/method=\"([^\"]+)\"/",
+        "hide": 2
       }
     ]
   },
@@ -1327,6 +1348,295 @@
       "fieldConfig": {
         "defaults": {
           "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 45,
+      "type": "table",
+      "title": "RPC methods (last 5m)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 63,
+        "w": 16,
+        "h": 9
+      },
+      "description": "Per method: calls/s and error ratio over 2m; worst p50/p95/p99 over the last 5m (seconds; Geth: success and failure, Reth: all calls). Methods with no calls are hidden. JSON-RPC error codes are not shown: Geth and Reth do not expose them in their metrics.",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "sum by (method) (nodebeat:rpc_calls:rate2m{instance=\"$instance\"}) > 0",
+          "refId": "A",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "sum by (method) (nodebeat:rpc_calls:rate2m{instance=\"$instance\",outcome=\"failure\"}) / sum by (method) (nodebeat:rpc_calls:rate2m{instance=\"$instance\"})",
+          "refId": "B",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "max by (method) (max_over_time(nodebeat:rpc_latency:seconds{instance=\"$instance\",quantile=\"0.5\"}[5m]))",
+          "refId": "C",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "max by (method) (max_over_time(nodebeat:rpc_latency:seconds{instance=\"$instance\",quantile=\"0.95\"}[5m]))",
+          "refId": "D",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "max by (method) (max_over_time(nodebeat:rpc_latency:seconds{instance=\"$instance\",quantile=\"0.99\"}[5m]))",
+          "refId": "E",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time #A": true,
+              "Time #B": true,
+              "Time #C": true,
+              "Time #D": true,
+              "Time #E": true
+            },
+            "indexByName": {},
+            "renameByName": {}
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "filterByValue",
+          "options": {
+            "filters": [
+              {
+                "fieldName": "Value #A",
+                "config": {
+                  "id": "isNull",
+                  "options": {}
+                }
+              }
+            ],
+            "type": "exclude",
+            "match": "any"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {
+              "method": 0,
+              "Value #A": 1,
+              "Value #B": 2,
+              "Value #C": 3,
+              "Value #D": 4,
+              "Value #E": 5
+            },
+            "renameByName": {
+              "method": "Method",
+              "Value #A": "Calls/s",
+              "Value #B": "Errors",
+              "Value #C": "p50",
+              "Value #D": "p95",
+              "Value #E": "p99"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "Calls/s",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Calls/s"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Errors"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "p50|p95|p99"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 0.5
+                    },
+                    {
+                      "color": "red",
+                      "value": 2
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Method"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Latency percentiles for this method",
+                    "url": "/d/nodebeat-node/nodebeat-node?${__url_time_range}&var-instance=${instance}&var-method=${__value.raw}"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "fields": ""
+        }
+      }
+    },
+    {
+      "id": 46,
+      "type": "timeseries",
+      "title": "Latency percentiles: $method",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 63,
+        "w": 8,
+        "h": 9
+      },
+      "description": "p50/p95/p99 over time for one method: click a method in the RPC methods table (default: the busiest method on this node). Clients publish summaries (precomputed quantiles), not histogram buckets, so there is no latency heatmap.",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "max by (quantile) (nodebeat:rpc_latency:seconds{instance=\"$instance\",method=\"$method\"})",
+          "refId": "A",
+          "legendFormat": "p{{quantile}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0
         },
         "overrides": []
       }
