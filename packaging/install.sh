@@ -17,10 +17,11 @@
 #     [--control-plane https://app-dev.nodebeat.stream] [--chain ethereum] \
 #     [--validators 12345,0xa1b2...] [--skip-checks] [--el-rpc-port 8545 ...]
 #
-# --validators (Ethereum): validator indices or 0x pubkeys whose duties to
-# alert on (missed attestations/proposals, effectiveness, slashing). Public
-# chain identifiers only, written to agent.env as NB_VALIDATORS. Omit to
-# monitor the node without duty alerts.
+# --validators: validators whose duties to alert on. Ethereum: indices or 0x
+# pubkeys (missed attestations/proposals, effectiveness, slashing). Cosmos:
+# consensus addresses, hex or bech32 ...valcons1... (missed blocks, jail,
+# voting power). Public chain identifiers only, written to agent.env as
+# NB_VALIDATORS. Omit to monitor the node without duty alerts.
 #
 # Token via flag is convenient but leaks into history/ps; prefer
 # NODEBEAT_INGEST_TOKEN=... sudo -E packaging/install.sh ...
@@ -73,10 +74,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# Commas only, and only index/pubkey characters: the value goes into an
-# EnvironmentFile. The agent validates each entry at start.
+# Commas only, and only letters/digits (indices, hex, bech32): the value goes
+# into an EnvironmentFile. The agent validates each entry for its chain.
 VALIDATORS="$(printf '%s' "$VALIDATORS" | tr -s ' \t\n' ',' | sed 's/^,//; s/,$//')"
-case "$VALIDATORS" in *[!0-9a-fA-Fx,]*) echo "--validators: comma-separated indices or 0x pubkeys only" >&2; exit 2 ;; esac
+case "$VALIDATORS" in *[!0-9a-zA-Z,]*) echo "--validators: comma-separated indices, 0x pubkeys or consensus addresses only" >&2; exit 2 ;; esac
 
 PORT_FLAGS="--el-rpc-port $EL_RPC_PORT --beacon-port $BEACON_PORT --el-metrics-port $EL_METRICS_PORT --cl-metrics-port $CL_METRICS_PORT --el-p2p-port $EL_P2P_PORT --cl-p2p-port $CL_P2P_PORT --cosmos-rpc-port $COSMOS_RPC_PORT --cosmos-rest-port $COSMOS_REST_PORT --cosmos-metrics-port $COSMOS_METRICS_PORT --cosmos-p2p-port $COSMOS_P2P_PORT"
 

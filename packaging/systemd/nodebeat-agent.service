@@ -11,7 +11,7 @@ Group=nodebeat
 EnvironmentFile=/etc/nodebeat/agent.env
 # The ingest token is NOT passed as a flag (argv is world-readable via ps):
 # the agent reads NB_INGEST_TOKEN from this EnvironmentFile directly.
-# NB_VALIDATORS (Ethereum duty tracking) is read the same way, in both
+# NB_VALIDATORS (validator duty tracking, both chains) is read the same way, in both
 # standalone and --enrolled mode.
 # Port overrides (devnet ephemeral host ports). install.sh always writes every
 # NB_*_PORT (defaults = standards, metrics 0 = per-client default), so no

@@ -76,8 +76,10 @@ type Config struct {
 	// mixed hosts where each agent instance handles one chain. Empty =
 	// probe all families.
 	Chain string
-	// Validators (Ethereum: indices or 0x pubkeys) turns on duty tracking
-	// (US-1.12); see ethpoll.ParseValidators.
+	// Validators turns on validator duty tracking: Ethereum indices or 0x
+	// pubkeys for the poller (US-1.12), Cosmos consensus addresses for the
+	// watcher's --validator (US-1.7/1.13). Normalized per chain once
+	// detection is known; see NormalizeValidators.
 	Validators    []string
 	SuperviseOpts supervise.Options
 }
@@ -247,6 +249,9 @@ func (r *Runner) Prepare(ctx context.Context) error {
 // materialize writes config + manifest + child specs for an already-known
 // detection. Split from Prepare so tests can run it without network access.
 func (r *Runner) materialize(det *detect.Result) error {
+	if err := r.normalizeValidators(det); err != nil {
+		return err
+	}
 	rendered, err := alloycfg.Render(det, alloycfg.Options{
 		RemoteWriteURL:     r.cfg.RemoteWriteURL,
 		ExporterMetricsURL: r.chainMetricsURL(det),
@@ -267,7 +272,23 @@ func (r *Runner) PrepareRemote(det *detect.Result, alloyConfig string) error {
 	if alloyConfig == "" {
 		return fmt.Errorf("empty remote alloy config")
 	}
+	if err := r.normalizeValidators(det); err != nil {
+		return err
+	}
 	return r.materializeWithConfig(det, alloyConfig)
+}
+
+// normalizeValidators checks --validators against the detected chain and
+// stores the collector form (idempotent across reloads).
+func (r *Runner) normalizeValidators(det *detect.Result) error {
+	vals, err := NormalizeValidators(det.Chain, r.cfg.Validators)
+	if err != nil {
+		return fmt.Errorf("--validators: %w", err)
+	}
+	r.mu.Lock()
+	r.cfg.Validators = vals
+	r.mu.Unlock()
+	return nil
 }
 
 // ApplyRemoteConfig rewrites config.alloy when the server pipeline changed
@@ -312,7 +333,7 @@ func (r *Runner) materializeWithConfig(det *detect.Result, rendered string) erro
 		if err != nil {
 			return fmt.Errorf("exporter binary %q: %w", name, err)
 		}
-		exporterBin, exporterArgList = bin, exporterArgs(det, r.cfg.ExporterPort)
+		exporterBin, exporterArgList = bin, exporterArgs(det, r.cfg.ExporterPort, r.cfg.Validators)
 	}
 	alloyBin, err := exec.LookPath(r.cfg.AlloyBin)
 	if err != nil {
@@ -570,10 +591,17 @@ func (r *Runner) Run(ctx context.Context) error {
 // It serves /metrics on --http-addr (default :8080); we pin
 // 127.0.0.1:<port> to match the chain metrics URL — only the co-located
 // Alloy scrapes it.
-func exporterArgs(det *detect.Result, port int) []string {
+//
+// Without --validator the watcher tracks no validator and emits chain-level
+// series only, so the jail / missed-block / voting-power rules have nothing
+// to read: each configured consensus address is passed through.
+func exporterArgs(det *detect.Result, port int, validators []string) []string {
 	args := []string{"--http-addr", "127.0.0.1:" + strconv.Itoa(port)}
 	if u := firstURL(det, detect.KindCosmosRPC); u != "" {
 		args = append(args, "--node", u)
+	}
+	for _, v := range validators {
+		args = append(args, "--validator", v)
 	}
 	return args
 }

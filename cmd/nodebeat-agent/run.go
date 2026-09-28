@@ -13,7 +13,6 @@ import (
 	"github.com/nodebeat/agent/internal/agent"
 	"github.com/nodebeat/agent/internal/detect"
 	"github.com/nodebeat/agent/internal/enroll"
-	"github.com/nodebeat/agent/internal/ethpoll"
 )
 
 // runRun starts the supervised agent. SIGINT/SIGTERM stop it gracefully;
@@ -35,7 +34,7 @@ func runRun(args []string) int {
 	enrolled := fs.Bool("enrolled", false, "run from enrollment.json in --state-dir (created by `enroll`); fetches the server pipeline and polls it")
 	pollInterval := fs.Duration("poll-interval", 60*time.Second, "config poll interval in enrolled mode (also the server heartbeat)")
 	chainFlag := fs.String("chain", "", "restrict detection to ethereum or cosmos (empty = auto; use per instance on mixed hosts)")
-	validatorsFlag := fs.String("validators", "", "Ethereum validators to track duties for: comma-separated indices or 0x pubkeys (default $NB_VALIDATORS; empty = no duty alerts)")
+	validatorsFlag := fs.String("validators", "", "validators to track duties for, comma-separated (default $NB_VALIDATORS; empty = no duty alerts): Ethereum indices or 0x pubkeys; Cosmos consensus addresses (hex or ...valcons1...)")
 	var ports detect.Ports
 	detect.BindPortFlags(fs, &ports)
 	if err := fs.Parse(args); err != nil {
@@ -46,10 +45,14 @@ func runRun(args []string) int {
 		fmt.Fprintln(os.Stderr, "run:", err)
 		return 2
 	}
-	validators, err := ethpoll.ParseValidators(firstNonEmpty(*validatorsFlag, os.Getenv("NB_VALIDATORS")))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "run: --validators:", err)
-		return 2
+	// Formats depend on the chain: checked here when it is already known
+	// (--chain), otherwise after detection (NormalizeValidators).
+	validators := agent.SplitValidators(firstNonEmpty(*validatorsFlag, os.Getenv("NB_VALIDATORS")))
+	if chain != "" {
+		if _, err := agent.NormalizeValidators(chain, validators); err != nil {
+			fmt.Fprintln(os.Stderr, "run: --validators:", err)
+			return 2
+		}
 	}
 
 	logger := log.New(os.Stderr, "", log.LstdFlags)

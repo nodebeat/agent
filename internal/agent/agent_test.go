@@ -159,10 +159,12 @@ func TestExporterArgsCosmos(t *testing.T) {
 			{Kind: detect.KindCosmosMetrics, URL: "http://node3.example:26660/metrics"},
 		},
 	}
-	joined := strings.Join(exporterArgs(det, 9090), " ")
+	joined := strings.Join(exporterArgs(det, 9090, []string{"CC810073ABFEFF022559B8FFA88BC7817718FEF8", "0123456789ABCDEF0123456789ABCDEF01234567"}), " ")
 	for _, want := range []string{
 		"--http-addr 127.0.0.1:9090",
 		"--node http://node3.example:26657",
+		// Without --validator the watcher emits no per-validator series.
+		"--validator CC810073ABFEFF022559B8FFA88BC7817718FEF8 --validator 0123456789ABCDEF0123456789ABCDEF01234567",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("cosmos exporter args %q missing %q", joined, want)
@@ -173,6 +175,39 @@ func TestExporterArgsCosmos(t *testing.T) {
 	}
 	if strings.Contains(joined, "--execution-url") || strings.Contains(joined, "--consensus-url") {
 		t.Errorf("cosmos args must not carry ethereum flags, got %q", joined)
+	}
+}
+
+func TestNormalizeValidators(t *testing.T) {
+	const hexAddr = "CC810073ABFEFF022559B8FFA88BC7817718FEF8"
+	for _, c := range []struct {
+		chain string
+		in    []string
+		want  string
+		err   bool
+	}{
+		// Vectors encoded with the BIP-173 reference implementation.
+		{detect.ChainCosmos, []string{"cosmosvalcons1ejqsquatlmlsyf2ehrl63z78s9m33lhc66ma3x"}, hexAddr, false},
+		{detect.ChainCosmos, []string{"osmovalcons1ejqsquatlmlsyf2ehrl63z78s9m33lhcdz5muq"}, hexAddr, false},
+		{detect.ChainCosmos, []string{strings.ToLower(hexAddr), hexAddr, "COSMOSVALCONS1EJQSQUATLMLSYF2EHRL63Z78S9M33LHC66MA3X"}, hexAddr, false},
+		{detect.ChainCosmos, []string{"cosmosvaloper1ejqsquatlmlsyf2ehrl63z78s9m33lhcwfgpa8"}, "", true}, // operator address
+		{detect.ChainCosmos, []string{"cosmosvalcons1ejqsquatlmlsyf2ehrl63z78s9m33lhc66ma3y"}, "", true}, // bad checksum
+		{detect.ChainCosmos, []string{"CC810073"}, "", true},
+		{detect.ChainCosmos, []string{"12345"}, "", true}, // an Ethereum index
+		{detect.ChainEthereum, []string{"12345", "7"}, "12345,7", false},
+		{detect.ChainEthereum, []string{hexAddr}, "", true},
+		{detect.ChainCosmos, nil, "", false},
+	} {
+		got, err := NormalizeValidators(c.chain, c.in)
+		if (err != nil) != c.err || strings.Join(got, ",") != c.want {
+			t.Errorf("NormalizeValidators(%s, %q) = %q, %v; want %q, err %v", c.chain, c.in, got, err, c.want, c.err)
+		}
+		if err == nil {
+			again, err := NormalizeValidators(c.chain, got)
+			if err != nil || strings.Join(again, ",") != strings.Join(got, ",") {
+				t.Errorf("not idempotent: %q -> %q, %v", got, again, err)
+			}
+		}
 	}
 }
 
