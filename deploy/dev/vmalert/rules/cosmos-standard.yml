@@ -10,6 +10,7 @@ groups:
         for: 5m
         labels:
           severity: warning
+          component: consensus
           chain: cosmos
         annotations:
           summary: "Validator missing blocks for 5m ({{ $labels.instance }}, {{ $value }} consecutive)"
@@ -28,6 +29,7 @@ groups:
         for: 10m
         labels:
           severity: warning
+          component: consensus
           chain: cosmos
         annotations:
           summary: "Voting power down >10% over 1h ({{ $labels.instance }})"
@@ -49,6 +51,7 @@ groups:
         for: 10m
         labels:
           severity: warning
+          component: consensus
           chain: cosmos
         annotations:
           summary: "CometBFT has no peers for 10m ({{ $labels.instance }})"

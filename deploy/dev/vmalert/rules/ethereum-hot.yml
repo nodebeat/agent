@@ -19,6 +19,7 @@ groups:
         for: 0s
         labels:
           severity: critical
+          component: consensus
           chain: ethereum
         annotations:
           summary: "Consensus client is syncing ({{ $labels.instance }})"
@@ -31,6 +32,7 @@ groups:
         for: 0s
         labels:
           severity: critical
+          component: rpc
           chain: ethereum
         annotations:
           summary: "Execution client is syncing ({{ $labels.instance }})"
@@ -43,6 +45,7 @@ groups:
         for: 0s
         labels:
           severity: critical
+          component: consensus
           chain: ethereum
         annotations:
           summary: "Exporter cannot reach the beacon node ({{ $labels.instance }})"
@@ -61,6 +64,7 @@ groups:
         for: 0s
         labels:
           severity: critical
+          component: consensus
           chain: ethereum
         annotations:
           summary: "Beacon head slot not advancing ({{ $labels.instance }})"
@@ -74,6 +78,7 @@ groups:
         for: 0s
         labels:
           severity: critical
+          component: rpc
           chain: ethereum
         annotations:
           summary: "Execution head block not advancing ({{ $labels.instance }})"
@@ -88,6 +93,7 @@ groups:
         for: 1m
         labels:
           severity: critical
+          component: consensus
           chain: ethereum
         annotations:
           summary: "Beacon node {{ $value }} slots behind head ({{ $labels.instance }})"
@@ -101,6 +107,7 @@ groups:
         for: 0s
         labels:
           severity: critical
+          component: consensus
           chain: ethereum
         annotations:
           summary: "No chain telemetry for 3m ({{ $labels.instance }})"

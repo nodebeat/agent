@@ -1,208 +1,739 @@
 {
   "uid": "nodebeat-fleet",
   "title": "NodeBeat Fleet",
-  "tags": ["nodebeat"],
+  "tags": [
+    "nodebeat",
+    "fleet"
+  ],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,
-  "templating": {
-    "list": [
-      {
-        "name": "instance",
-        "label": "Instance",
-        "type": "query",
-        "datasource": { "type": "prometheus", "uid": "victoriametrics" },
-        "definition": "label_values(eth_exe_block_most_recent_number, instance)",
-        "includeAll": true,
-        "multi": true,
-        "refresh": 1,
-        "sort": 1,
-        "current": {}
-      }
-    ]
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
   },
+  "templating": {
+    "list": []
+  },
+  "links": [],
   "panels": [
     {
       "id": 1,
-      "title": "Fleet",
-      "type": "row",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+      "type": "stat",
+      "title": "Nodes online",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "count(count by (instance) (up == 1)) or vector(0)",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
     },
     {
       "id": 2,
-      "title": "Nodes reporting",
       "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "title": "Nodes offline",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
       "targets": [
-        { "expr": "count(count by (instance) (eth_exe_block_most_recent_number))", "refId": "A" }
-      ]
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "count(((count by (instance) (last_over_time(up[7d])) unless count by (instance) (up)) or (count by (instance) (up == 0)))) or vector(0)",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "description": "Seen in the last 7 days but not reporting now, or reporting a failing scrape."
     },
     {
       "id": 3,
-      "title": "Alerting",
-      "type": "text",
-      "gridPos": { "h": 8, "w": 12, "x": 6, "y": 1 },
+      "type": "stat",
+      "title": "Critical alerts",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "count(ALERTS{alertstate=\"firing\",severity=\"critical\"}) or vector(0)",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
       "options": {
-        "mode": "markdown",
-        "content": "Grafana is dashboards-only and NOT in the alert path.\n\nFiring alerts live in Alertmanager and route to receivers:\n\n- Critical (paging): `severity=\"critical\"`, no group wait\n- Standard: grouped, 30s wait\n\nDev receivers land in the mock sink. Check Alertmanager directly for live state."
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
       }
     },
     {
       "id": 4,
-      "title": "Chain head (slot)",
       "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "title": "Warnings",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
       "targets": [
-        { "expr": "max(eth_con_sync_head_slot)", "refId": "A" }
-      ]
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "count(ALERTS{alertstate=\"firing\",severity=\"warning\"}) or vector(0)",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
     },
     {
       "id": 5,
-      "title": "EL head (block)",
-      "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 5 },
+      "type": "table",
+      "title": "Node health",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 24,
+        "h": 12
+      },
       "targets": [
-        { "expr": "max(eth_exe_block_most_recent_number)", "refId": "A" }
-      ]
-    },
-    {
-      "id": 6,
-      "title": "Chain",
-      "type": "row",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }
-    },
-    {
-      "id": 7,
-      "title": "Head slot / EL block",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
-      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 10 },
-      "targets": [
-        { "expr": "eth_con_sync_head_slot{instance=~\"$instance\"}", "refId": "A", "legendFormat": "head slot {{instance}}" },
-        { "expr": "eth_exe_block_most_recent_number{instance=~\"$instance\"}", "refId": "B", "legendFormat": "EL block {{instance}}" }
-      ]
-    },
-    {
-      "id": 8,
-      "title": "Sync %",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
-      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 10 },
-      "targets": [
-        { "expr": "eth_con_sync_percentage{instance=~\"$instance\"}", "refId": "A", "legendFormat": "CL {{instance}}" },
-        { "expr": "eth_exe_sync_percentage{instance=~\"$instance\"}", "refId": "B", "legendFormat": "EL {{instance}}" }
-      ]
-    },
-    {
-      "id": 9,
-      "title": "Peers",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
-      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 10 },
-      "targets": [
-        { "expr": "eth_exe_net_peer_count{instance=~\"$instance\"}", "refId": "A", "legendFormat": "EL {{instance}}" },
-        { "expr": "sum by (instance) (eth_con_peers{instance=~\"$instance\"})", "refId": "B", "legendFormat": "CL {{instance}}" }
-      ]
-    },
-    {
-      "id": 10,
-      "title": "Sync distance (slots)",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
-      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 16 },
-      "targets": [
-        { "expr": "eth_con_sync_distance{instance=~\"$instance\"}", "refId": "A", "legendFormat": "{{instance}}" }
-      ]
-    },
-    {
-      "id": 11,
-      "title": "Reorgs (1h)",
-      "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
-      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 16 },
-      "targets": [
-        { "expr": "sum by (instance) (increase(eth_con_reorg_count{instance=~\"$instance\"}[1h]))", "refId": "A" }
-      ]
-    },
-    {
-      "id": 12,
-      "title": "Fork",
-      "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
-      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 16 },
-      "targets": [
-        { "expr": "eth_con_fork_current{instance=~\"$instance\"}", "refId": "A" }
-      ]
-    },
-    {
-      "id": 13,
-      "title": "Host / RPC",
-      "type": "row",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 }
-    },
-    {
-      "id": 14,
-      "title": "CPU non-idle",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
-      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 23 },
-      "targets": [
-        { "expr": "avg by (instance) (rate(node_cpu_seconds_total{instance=~\"$instance\",mode!=\"idle\"}[5m]))", "refId": "A", "legendFormat": "{{instance}}" }
-      ]
-    },
-    {
-      "id": 15,
-      "title": "Memory available %",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
-      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 23 },
-      "targets": [
-        { "expr": "100 * node_memory_MemAvailable_bytes{instance=~\"$instance\"} / node_memory_MemTotal_bytes{instance=~\"$instance\"}", "refId": "A", "legendFormat": "{{instance}}" }
-      ]
-    },
-    {
-      "id": 16,
-      "title": "Root disk free %",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
-      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 23 },
-      "targets": [
-        { "expr": "100 * node_filesystem_avail_bytes{instance=~\"$instance\",mountpoint=\"/\"} / node_filesystem_size_bytes{instance=~\"$instance\",mountpoint=\"/\"}", "refId": "A", "legendFormat": "{{instance}}" }
-      ]
-    },
-    {
-      "id": 17,
-      "title": "Network I/O",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
-      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 29 },
-      "targets": [
-        { "expr": "sum by (instance) (rate(node_network_receive_bytes_total{instance=~\"$instance\",device!=\"lo\"}[5m]))", "refId": "A", "legendFormat": "rx {{instance}}" },
-        { "expr": "sum by (instance) (rate(node_network_transmit_bytes_total{instance=~\"$instance\",device!=\"lo\"}[5m]))", "refId": "B", "legendFormat": "tx {{instance}}" }
-      ]
-    },
-    {
-      "id": 18,
-      "title": "Gas price (gwei)",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
-      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 29 },
-      "targets": [
-        { "expr": "eth_exe_gas_price_gwei{instance=~\"$instance\"}", "refId": "A", "legendFormat": "{{instance}}" }
-      ]
-    },
-    {
-      "id": 19,
-      "title": "Tx per head block",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
-      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 29 },
-      "targets": [
-        { "expr": "eth_exe_block_head_transactions_in_block{instance=~\"$instance\"}", "refId": "A", "legendFormat": "{{instance}}" }
-      ]
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "group by (instance, chain) (last_over_time(up{chain!=\"\"}[7d]))",
+          "refId": "A",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "max by (instance) (2 * group by (instance) (ALERTS{alertstate=\"firing\",component!=\"\",severity=\"critical\"}) or 1 * group by (instance) (ALERTS{alertstate=\"firing\",component!=\"\",severity=\"warning\"}) or 0 * group by (instance) (last_over_time(up[7d])))",
+          "refId": "B",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "max by (instance) (2 * group by (instance) (ALERTS{alertstate=\"firing\",component=\"consensus\",severity=\"critical\"}) or 1 * group by (instance) (ALERTS{alertstate=\"firing\",component=\"consensus\",severity=\"warning\"}) or 0 * group by (instance) (last_over_time(up[7d])))",
+          "refId": "C",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "max by (instance) (2 * group by (instance) (ALERTS{alertstate=\"firing\",component=\"rpc\",severity=\"critical\"}) or 1 * group by (instance) (ALERTS{alertstate=\"firing\",component=\"rpc\",severity=\"warning\"}) or 0 * group by (instance) (last_over_time(up[7d])))",
+          "refId": "D",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "max by (instance) (2 * group by (instance) (ALERTS{alertstate=\"firing\",component=\"infra\",severity=\"critical\"}) or 1 * group by (instance) (ALERTS{alertstate=\"firing\",component=\"infra\",severity=\"warning\"}) or 0 * group by (instance) (last_over_time(up[7d])))",
+          "refId": "E",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "max by (instance) (eth_con_sync_head_slot) or max by (instance) (cometbft_consensus_height) or max by (instance) (tendermint_consensus_height)",
+          "refId": "F",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "sum by (instance) (eth_con_peers) or max by (instance) (cometbft_p2p_peers) or max by (instance) (tendermint_p2p_peers)",
+          "refId": "G",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "min by (instance) (100 * node_filesystem_avail_bytes{mountpoint=\"/\"} / node_filesystem_size_bytes{mountpoint=\"/\"})",
+          "refId": "H",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "max by (instance) (tlast_over_time(up[7d])) * 1000",
+          "refId": "I",
+          "format": "table",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "description": "One row per node seen in the last 7 days, worst first. Consensus / RPC / Infra turn orange or red while a warning or critical alert of that component is firing, so red here means the same thing as a page. Click a node for its chain and host panels.",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time #A": true,
+              "Time #B": true,
+              "Time #C": true,
+              "Time #D": true,
+              "Time #E": true,
+              "Time #F": true,
+              "Time #G": true,
+              "Time #H": true,
+              "Time #I": true
+            },
+            "indexByName": {},
+            "renameByName": {}
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Value #A": true
+            },
+            "indexByName": {
+              "instance": 0,
+              "chain": 1,
+              "Value #B": 2,
+              "Value #C": 3,
+              "Value #D": 4,
+              "Value #E": 5,
+              "Value #F": 6,
+              "Value #G": 7,
+              "Value #H": 8,
+              "Value #I": 9
+            },
+            "renameByName": {
+              "instance": "Node",
+              "chain": "Chain",
+              "Value #B": "Health",
+              "Value #C": "Consensus",
+              "Value #D": "RPC",
+              "Value #E": "Infra",
+              "Value #F": "Head",
+              "Value #G": "Peers",
+              "Value #H": "Disk free",
+              "Value #I": "Last seen"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "Health",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Node"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open node detail",
+                    "url": "/d/nodebeat-node/nodebeat-node?${__url_time_range}&var-instance=${__value.raw}"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Health"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "OK",
+                        "color": "green",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "WARN",
+                        "color": "orange",
+                        "index": 1
+                      },
+                      "2": {
+                        "text": "CRIT",
+                        "color": "red",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Consensus"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "OK",
+                        "color": "green",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "WARN",
+                        "color": "orange",
+                        "index": 1
+                      },
+                      "2": {
+                        "text": "CRIT",
+                        "color": "red",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "RPC"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "OK",
+                        "color": "green",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "WARN",
+                        "color": "orange",
+                        "index": 1
+                      },
+                      "2": {
+                        "text": "CRIT",
+                        "color": "red",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Infra"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "OK",
+                        "color": "green",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "WARN",
+                        "color": "orange",
+                        "index": 1
+                      },
+                      "2": {
+                        "text": "CRIT",
+                        "color": "red",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Head"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Peers"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Disk free"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 5
+                    },
+                    {
+                      "color": "green",
+                      "value": 15
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Last seen"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
     }
   ]
 }

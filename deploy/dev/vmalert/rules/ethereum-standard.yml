@@ -10,6 +10,7 @@ groups:
         for: 10m
         labels:
           severity: warning
+          component: rpc
           chain: ethereum
         annotations:
           summary: "Execution client has no peers for 10m ({{ $labels.instance }})"
@@ -22,6 +23,7 @@ groups:
         for: 10m
         labels:
           severity: warning
+          component: consensus
           chain: ethereum
         annotations:
           summary: "Consensus client has no peers for 10m ({{ $labels.instance }})"
@@ -34,6 +36,7 @@ groups:
         for: 5m
         labels:
           severity: warning
+          component: consensus
           chain: ethereum
         annotations:
           summary: "Frequent reorgs observed ({{ $value }} in 5m, {{ $labels.instance }})"
