@@ -102,6 +102,54 @@ func TestChainMetricsURL(t *testing.T) {
 	}
 }
 
+func TestChainDutiesURL(t *testing.T) {
+	for _, c := range []struct {
+		chain, addr string
+		validators  []string
+		want        string
+	}{
+		{detect.ChainEthereum, "127.0.0.1:19090", []string{"1"}, "http://127.0.0.1:19090/chain/duties"},
+		{detect.ChainEthereum, "0.0.0.0:19091", []string{"1"}, "http://127.0.0.1:19091/chain/duties"},
+		{detect.ChainEthereum, "127.0.0.1:19090", nil, ""},
+		{detect.ChainCosmos, "127.0.0.1:19090", []string{"1"}, ""},
+	} {
+		if got := ChainDutiesURL(c.chain, c.addr, c.validators); got != c.want {
+			t.Errorf("ChainDutiesURL(%s, %s, %v) = %q, want %q", c.chain, c.addr, c.validators, got, c.want)
+		}
+	}
+}
+
+// With --validators the duty endpoint is scraped on the standard job and the
+// manifest lists the validators and the duty calls; without, neither.
+func TestValidatorsInConfigAndManifest(t *testing.T) {
+	for _, validators := range [][]string{nil, {"1", "2"}} {
+		dir := t.TempDir()
+		r := New(Config{
+			Target:         "node9.example",
+			RemoteWriteURL: "https://ingest:8428/api/v1/write",
+			AlloyBin:       "/bin/true",
+			StateDir:       dir,
+			Validators:     validators,
+		}, testLogger())
+		if err := r.materialize(fullFixture()); err != nil {
+			t.Fatal(err)
+		}
+		cfg := readFile(t, r.ConfigPath())
+		m := r.Manifest()
+		calls := strings.Join(m.ChainAPICalls, "\n")
+		has := len(validators) > 0
+		if strings.Contains(cfg, `__metrics_path__ = "/chain/duties"`) != has || strings.Contains(cfg, `role = "validators"`) != has {
+			t.Errorf("validators=%v: duties target in config.alloy = %v, want %v\n%s", validators, !has, has, cfg)
+		}
+		if strings.Contains(calls, "/eth/v1/validator/liveness/") != has {
+			t.Errorf("validators=%v: manifest duty calls = %v, want %v", validators, !has, has)
+		}
+		if has && (strings.Join(m.Validators, ",") != "1,2" || m.ScrapeJobs[1].Targets[0] != "http://127.0.0.1:19090/chain/duties") {
+			t.Errorf("manifest validators %v, standard targets %v", m.Validators, m.ScrapeJobs[1].Targets)
+		}
+	}
+}
+
 func TestExporterArgsCosmos(t *testing.T) {
 	det := &detect.Result{
 		Target: "node3.example",
@@ -301,6 +349,12 @@ func TestFakeBinaryE2E(t *testing.T) {
 		return err == nil && strings.Contains(b, `eth_con_sync_head_slot{module="sync",node="consensus"} 4242`) &&
 			strings.Contains(b, `eth_exe_block_most_recent_number{ethereum_role="execution",identifier="head",module="block",node_name="execution"} 16`)
 	})
+	// No --validators: no duty endpoint.
+	if resp, err := http.Get(base + ChainDutiesPath); err != nil || resp.StatusCode != http.StatusNotFound {
+		t.Errorf("%s without validators: %v %v, want 404", ChainDutiesPath, resp, err)
+	} else {
+		resp.Body.Close()
+	}
 	var m Manifest
 	waitFor(t, 5*time.Second, "/manifest served", func() bool {
 		b, err := tryGet(base + "/manifest")

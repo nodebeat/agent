@@ -15,7 +15,12 @@
 #     --remote-write-url https://ingest.example:8428/api/v1/write \
 #     [--instance NAME] [--ingest-token TOKEN | NODEBEAT_INGEST_TOKEN=... sudo -E ...] \
 #     [--control-plane https://app-dev.nodebeat.stream] [--chain ethereum] \
-#     [--skip-checks] [--el-rpc-port 8545 ...]
+#     [--validators 12345,0xa1b2...] [--skip-checks] [--el-rpc-port 8545 ...]
+#
+# --validators (Ethereum): validator indices or 0x pubkeys whose duties to
+# alert on (missed attestations/proposals, effectiveness, slashing). Public
+# chain identifiers only, written to agent.env as NB_VALIDATORS. Omit to
+# monitor the node without duty alerts.
 #
 # Token via flag is convenient but leaks into history/ps; prefer
 # NODEBEAT_INGEST_TOKEN=... sudo -E packaging/install.sh ...
@@ -38,7 +43,7 @@ BIN=""; TARGET=""; RW_URL=""; INSTANCE=""; INGEST_TOKEN=""
 # NODEBEAT_TOKEN is accepted as a legacy fallback (old portal/docs snippet).
 [ -n "${NODEBEAT_INGEST_TOKEN:-}" ] && INGEST_TOKEN="$NODEBEAT_INGEST_TOKEN"
 [ -z "$INGEST_TOKEN" ] && [ -n "${NODEBEAT_TOKEN:-}" ] && INGEST_TOKEN="$NODEBEAT_TOKEN"
-CONTROL_PLANE=""; CHAIN=""; SKIP_CHECKS=0
+CONTROL_PLANE=""; CHAIN=""; SKIP_CHECKS=0; VALIDATORS=""
 EL_RPC_PORT=8545; BEACON_PORT=5052; EL_METRICS_PORT=0; CL_METRICS_PORT=0
 EL_P2P_PORT=30303; CL_P2P_PORT=9000
 COSMOS_RPC_PORT=26657; COSMOS_REST_PORT=1317; COSMOS_METRICS_PORT=0; COSMOS_P2P_PORT=26656
@@ -51,6 +56,7 @@ while [ $# -gt 0 ]; do
     --ingest-token) INGEST_TOKEN="$2"; INGEST_TOKEN_FROM_FLAG=1; shift 2 ;;
     --control-plane) CONTROL_PLANE="$2"; shift 2 ;;
     --chain) CHAIN="$2"; shift 2 ;;
+    --validators) VALIDATORS="$2"; shift 2 ;;
     --skip-checks) SKIP_CHECKS=1; shift ;;
     --el-rpc-port) EL_RPC_PORT="$2"; shift 2 ;;
     --beacon-port) BEACON_PORT="$2"; shift 2 ;;
@@ -66,6 +72,11 @@ while [ $# -gt 0 ]; do
     *) echo "unknown flag: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
+
+# Commas only, and only index/pubkey characters: the value goes into an
+# EnvironmentFile. The agent validates each entry at start.
+VALIDATORS="$(printf '%s' "$VALIDATORS" | tr -s ' \t\n' ',' | sed 's/^,//; s/,$//')"
+case "$VALIDATORS" in *[!0-9a-fA-Fx,]*) echo "--validators: comma-separated indices or 0x pubkeys only" >&2; exit 2 ;; esac
 
 PORT_FLAGS="--el-rpc-port $EL_RPC_PORT --beacon-port $BEACON_PORT --el-metrics-port $EL_METRICS_PORT --cl-metrics-port $CL_METRICS_PORT --el-p2p-port $EL_P2P_PORT --cl-p2p-port $CL_P2P_PORT --cosmos-rpc-port $COSMOS_RPC_PORT --cosmos-rest-port $COSMOS_REST_PORT --cosmos-metrics-port $COSMOS_METRICS_PORT --cosmos-p2p-port $COSMOS_P2P_PORT"
 
@@ -126,6 +137,7 @@ NB_REMOTE_WRITE_URL=$RW_URL
 NB_INSTANCE=$INSTANCE
 NB_INGEST_TOKEN=$INGEST_TOKEN
 NB_CHAIN=$CHAIN
+NB_VALIDATORS=$VALIDATORS
 NB_EL_RPC_PORT=$EL_RPC_PORT
 NB_BEACON_PORT=$BEACON_PORT
 NB_EL_METRICS_PORT=$EL_METRICS_PORT

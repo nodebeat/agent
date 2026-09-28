@@ -5,7 +5,8 @@
 // ethereum-metrics-exporter emitted, so existing series continue across the
 // upgrade instead of going stale (which would page EthereumTelemetryStale).
 //
-// These are the only calls it makes (also listed in the agent manifest):
+// These are the only health calls it makes (also listed in the agent
+// manifest; duty calls for configured validators are in duties.go):
 //
 //	GET  <beacon>/eth/v1/node/syncing
 //	GET  <beacon>/eth/v1/node/peer_count
@@ -62,6 +63,9 @@ type Config struct {
 	ExecutionURL string
 	Interval     time.Duration
 	Timeout      time.Duration
+	// Validators (indices or 0x pubkeys, see ParseValidators) turns on
+	// duty tracking; needs BeaconURL. Served by DutiesHandler.
+	Validators []string
 	// Client overrides the HTTP client (tests). It must not set Timeout:
 	// the SSE stream is long-lived; per-poll deadlines come from contexts.
 	Client *http.Client
@@ -78,6 +82,8 @@ type Poller struct {
 	reorgCount, reorgDepth                      prometheus.Counter
 
 	exeUp, exeHead, exeTx, exeGas, exePeers, exeSyncing, exePct prometheus.Gauge
+
+	duties *duties
 }
 
 func New(cfg Config) *Poller {
@@ -141,6 +147,9 @@ func New(cfg Config) *Poller {
 		p.exeSyncing = exe("sync", "eth_exe_sync_is_syncing", "1 if eth_syncing reports progress.", nil)
 		p.exePct = exe("sync", "eth_exe_sync_percentage", "currentBlock / highestBlock * 100 (100 when not syncing).", nil)
 	}
+	if cfg.BeaconURL != "" && len(cfg.Validators) > 0 {
+		p.duties = newDuties(p, cfg.Validators)
+	}
 	return p
 }
 
@@ -154,6 +163,9 @@ func (p *Poller) Run(ctx context.Context) {
 	var wg sync.WaitGroup
 	if p.cfg.BeaconURL != "" {
 		wg.Go(func() { p.reorgStream(ctx) })
+	}
+	if p.duties != nil {
+		wg.Go(func() { p.duties.run(ctx) })
 	}
 	t := time.NewTicker(p.cfg.Interval)
 	defer t.Stop()

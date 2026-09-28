@@ -109,6 +109,15 @@ func TestRenderGolden(t *testing.T) {
 			},
 		},
 		{
+			name: "full_with_validators",
+			det:  fullDetection(),
+			opts: Options{
+				RemoteWriteURL:     "https://ingest.example:8428/api/v1/write",
+				ExporterMetricsURL: "http://127.0.0.1:19090/chain/metrics",
+				DutiesMetricsURL:   "http://127.0.0.1:19090/chain/duties",
+			},
+		},
+		{
 			name: "cosmos_full",
 			det:  cosmosDetection(),
 			opts: Options{RemoteWriteURL: "https://ingest.example:8428/api/v1/write"},

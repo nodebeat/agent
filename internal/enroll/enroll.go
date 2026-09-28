@@ -212,12 +212,20 @@ type NodeConfig struct {
 // heartbeat (the server refreshes last_seen). exporterURL is the agent's
 // bundled-exporter /metrics URL (from --exporter-port/--exporter-url) so
 // the server renders the scrape target the agent actually runs; empty
-// leaves the server default.
-func (c *Client) FetchConfig(ctx context.Context, nodeID, exporterURL string) (NodeConfig, error) {
+// leaves the server default. dutiesURL is the validator duty endpoint
+// (Ethereum with --validators); empty renders no duty target.
+func (c *Client) FetchConfig(ctx context.Context, nodeID, exporterURL, dutiesURL string) (NodeConfig, error) {
 	var out NodeConfig
 	path := "/api/v1/nodes/" + url.PathEscape(nodeID) + "/config"
+	q := url.Values{}
 	if exporterURL != "" {
-		path += "?" + url.Values{"exporter_url": {exporterURL}}.Encode()
+		q.Set("exporter_url", exporterURL)
+	}
+	if dutiesURL != "" {
+		q.Set("duties_url", dutiesURL)
+	}
+	if len(q) > 0 {
+		path += "?" + q.Encode()
 	}
 	resp, err := c.do(ctx, "GET", path, nil)
 	if err != nil {

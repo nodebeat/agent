@@ -1,0 +1,186 @@
+# Ethereum validator duties (US-1.12), from the agent's duty tracker
+# (internal/ethpoll/duties.go) for the validators listed with --validators.
+# Nothing here fires for nodes without --validators: the series do not
+# exist.
+#
+# Duties are judged per epoch (32 slots, 6.4 min on mainnet), so they cannot
+# page in <10s: a missed attestation is only known once the epoch's
+# attestations have had time to arrive. The agent does the epoch
+# bookkeeping (streaks, last-epoch counts), so these rules have no windows
+# tied to the epoch length and work on any network. A dead or hung beacon
+# node pages in <10s through ethereum-hot; these catch what that cannot see:
+# a validator client that is down, not connected, or has lost its keys
+# while the node itself stays healthy.
+#
+# Thresholds are defaults, not tuned on production traffic (we have none
+# yet); the reasoning for each is next to it. Revisit with the monthly
+# false-page review (US-1.18).
+groups:
+  - name: ethereum-duties
+    interval: 15s
+    rules:
+      # A healthy validator attests in >99% of epochs (beaconcha.in's
+      # BeaconScore puts healthy attestation performance above 99%), so
+      # treat a random miss as p = 1%. Two consecutive misses would then
+      # page one validator ~2% of days (225 epochs/day x 1e-4); three
+      # consecutive ones ~0.02% of days (1e-6 per epoch), i.e. a 10-validator
+      # node about once a year. So 3, which is also the acceptance's streak.
+      # Liveness counts attestations seen on gossip or in blocks, so it holds
+      # when the validator client uses another beacon node. Pages ~3 epochs
+      # after the validator stops (~20 min on mainnet); the rule below is
+      # faster when several validators stop together.
+      - alert: EthereumValidatorMissedAttestations
+        expr: eth_validator_missed_attestation_streak >= 3
+        # Two evaluations: one bad scrape must not page.
+        for: 30s
+        labels:
+          severity: critical
+          component: consensus
+          chain: ethereum
+        annotations:
+          summary: "Validator {{ $labels.validator }} missed {{ $value }} attestations in a row ({{ $labels.instance }})"
+          description: >-
+            No attestation from validator {{ $labels.validator }} was seen for
+            {{ $value }} consecutive epochs. The beacon node is up (that has
+            its own alerts), so check the validator client: is it running,
+            connected to a synced beacon node, and are its keys loaded? A
+            doppelganger-protection wait after a restart also looks like
+            this for 2-3 epochs.
+
+      # Many validators on one node missing the same epoch is the validator
+      # client or its connection, not chance: with p = 1% independent misses,
+      # 3 of 3 validators missing one epoch is 1e-6, and half of a larger set
+      # is rarer still. Pages one epoch after the fault (~7 min on mainnet)
+      # instead of three. Needs at least 3 validators on the node, as in the
+      # acceptance's "3 in a 32-slot window".
+      - alert: EthereumValidatorsOffline
+        expr: |
+          eth_validators_missed_attestations_last_epoch >= 3
+          and eth_validators_missed_attestations_last_epoch >= 0.5 * eth_validators_active
+        for: 30s
+        labels:
+          severity: critical
+          component: consensus
+          chain: ethereum
+        annotations:
+          summary: "{{ $value }} validators missed their attestation in the last epoch ({{ $labels.instance }})"
+          description: >-
+            At least half of this node's active validators ({{ $value }})
+            had no attestation seen in the last epoch. That is the validator
+            client, its beacon node connection, or its keys, not bad luck.
+            Check the validator client first.
+
+      # A proposal is rare (for one validator, a few times a year) and worth
+      # the block reward plus MEV, so every miss is worth a page; there is
+      # no streak to wait for. Judged two slots after the slot, so a late
+      # block still counts as proposed. A block that came and was reorged
+      # out also counts as missed (the reward is lost either way). Stays
+      # firing for 1h after the miss.
+      - alert: EthereumValidatorMissedProposal
+        expr: increase(eth_validator_proposals_total{result="missed"}[1h]) > 0
+        for: 30s
+        labels:
+          severity: critical
+          component: consensus
+          chain: ethereum
+        annotations:
+          summary: "Validator {{ $labels.validator }} missed a block proposal ({{ $labels.instance }})"
+          description: >-
+            Validator {{ $labels.validator }} had a proposal slot in the last
+            hour and no block from it is on the canonical chain. Check the
+            validator client and beacon node logs around that slot, the
+            execution client (payload building), and MEV-boost relays if
+            used (a relay timeout is a common cause).
+
+      # Slashed means the same key signed conflicting messages, usually two
+      # validator clients running the same key. The validator is being
+      # ejected; the urgent part is stopping the duplicate before other keys
+      # on it are slashed too.
+      - alert: EthereumValidatorSlashed
+        expr: eth_validator_slashed == 1
+        for: 30s
+        labels:
+          severity: critical
+          component: consensus
+          chain: ethereum
+        annotations:
+          summary: "Validator {{ $labels.validator }} has been slashed ({{ $labels.instance }})"
+          description: >-
+            The beacon chain marks validator {{ $labels.validator }} as
+            slashed. Find and stop any second validator client or machine
+            that has these keys (failover setups, restored backups) before
+            doing anything else.
+
+      # Effectiveness = attestation rewards earned (head+target+source,
+      # penalties as 0) / what perfect attestations would have earned, from
+      # the standard rewards API. Healthy validators score above 99%
+      # (beaconcha.in BeaconScore), so 90% is ten times the normal loss:
+      # late or wrong votes (slow beacon node, poor peering, clock drift) or
+      # repeated misses. Summed over the node's validators: a node problem
+      # hits all of them, while one validator's hour holds only ~9 duties
+      # and a single miss would already cost 11%. Needs >= 20 duties in the
+      # window: 1h for nodes with 3+ validators, 6h (~56 duties per
+      # validator) for smaller ones. Rewards for an epoch are final two
+      # epochs later, and none are counted during an inactivity leak (the
+      # ideal is 0 then).
+      - alert: EthereumValidatorAttestationEffectivenessLow
+        expr: |
+          (
+            sum by (instance) (increase(eth_validator_attestation_reward_gwei_total[1h]))
+              / sum by (instance) (increase(eth_validator_attestation_ideal_reward_gwei_total[1h])) < 0.9
+            and sum by (instance) (increase(eth_validator_attestations_total[1h])) >= 20
+          )
+          or
+          (
+            sum by (instance) (increase(eth_validator_attestation_reward_gwei_total[6h]))
+              / sum by (instance) (increase(eth_validator_attestation_ideal_reward_gwei_total[6h])) < 0.9
+            and sum by (instance) (increase(eth_validator_attestations_total[6h])) >= 20
+          )
+        for: 10m
+        labels:
+          severity: warning
+          component: consensus
+          chain: ethereum
+        annotations:
+          summary: "Attestation effectiveness {{ $value | humanizePercentage }} ({{ $labels.instance }})"
+          description: >-
+            This node's validators earned {{ $value | humanizePercentage }}
+            of the attestation rewards they could have (healthy is above
+            99%). Missed or late/wrong votes: check beacon node CPU/disk
+            (Host row), peer count, NTP clock sync, and validator client
+            logs.
+
+      # Duty alerts only see what the agent could check. If the beacon node
+      # cannot answer the duty calls for 2+ epochs (while it may still pass
+      # health checks), say so instead of going silent.
+      - alert: EthereumValidatorDutiesUnchecked
+        expr: eth_validator_duties_lag_epochs >= 2
+        for: 5m
+        labels:
+          severity: warning
+          component: consensus
+          chain: ethereum
+        annotations:
+          summary: "Validator {{ $labels.check }} not checked for {{ $value }} epochs ({{ $labels.instance }})"
+          description: >-
+            The agent could not read {{ $labels.check }} from the beacon node
+            for {{ $value }} epochs, so duty alerts for this node are blind.
+            See the agent log for the failing call; a beacon node under heavy
+            load can time out on these (10s limit).
+
+      # A listed validator the beacon node does not know is a typo or a
+      # deposit not processed yet; either way it is not being monitored.
+      - alert: EthereumValidatorUnknown
+        expr: eth_validators_unknown > 0
+        for: 30m
+        labels:
+          severity: warning
+          component: consensus
+          chain: ethereum
+        annotations:
+          summary: "{{ $value }} configured validators unknown to the beacon node ({{ $labels.instance }})"
+          description: >-
+            {{ $value }} of the validators in --validators are not on the
+            beacon chain yet (or the index/pubkey is wrong), so their duties
+            are not monitored. Check the list in /etc/nodebeat/agent.env
+            (NB_VALIDATORS) against a block explorer.

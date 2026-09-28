@@ -2,7 +2,7 @@
 
 Open-source, read-only monitoring agent for crypto validators and RPC nodes (Ethereum first, Cosmos supported). This is the only NodeBeat component that runs on your infrastructure.
 
-**What it does:** auto-detects the chain client on a target host, renders a Grafana Alloy pipeline, and supervises Alloy (plus `cosmos-validator-watcher` for Cosmos) as child processes. For Ethereum it polls the standard Beacon API and JSON-RPC itself with read-only calls (`internal/ethpoll`), so there is no third-party exporter to install. Alloy owns scrape + `remote_write` (WAL/retry/TLS) to the NodeBeat SaaS backend or any Prometheus remote-write endpoint.
+**What it does:** auto-detects the chain client on a target host, renders a Grafana Alloy pipeline, and supervises Alloy (plus `cosmos-validator-watcher` for Cosmos) as child processes. For Ethereum it polls the standard Beacon API and JSON-RPC itself with read-only calls (`internal/ethpoll`), so there is no third-party exporter to install; with `--validators` (indices or pubkeys) it also tracks those validators' duties per epoch — attestations, proposals, attestation effectiveness, slashing — with the same read-only API, served on `127.0.0.1:19090/chain/duties`. Alloy owns scrape + `remote_write` (WAL/retry/TLS) to the NodeBeat SaaS backend or any Prometheus remote-write endpoint.
 
 **What it never does:** no keys, no SSH, no restarts, no writes outside its state dir, no inbound ports beyond localhost diagnostics — no exceptions.
 
@@ -43,7 +43,7 @@ One agent run monitors one chain. An Ethereum EL+CL pair counts as one chain (on
 cmd/nodebeat-agent/   # detect | enroll | run (incl. --enrolled poll loop)
 cmd/nodebeat-onboard/ # pre-flight checklist
 internal/agent/       # supervisor: detect → render → run Alloy (+ Cosmos watcher)
-internal/ethpoll/     # read-only Ethereum poller (Beacon API + JSON-RPC)
+internal/ethpoll/     # read-only Ethereum poller (Beacon API + JSON-RPC) and validator duty tracker
 internal/detect/      # chain/client probing (EL/CL, CometBFT)
 internal/alloycfg/    # Alloy pipeline renderer (hot 5s, poller 1s / standard 15s / node 15s)
 internal/enroll/      # SaaS enrollment client (ingest token, 0600)

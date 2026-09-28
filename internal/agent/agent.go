@@ -45,8 +45,12 @@ const (
 	ChildAlloy    = "alloy"
 )
 
-// ChainMetricsPath serves the Ethereum poller on the diagnostics server.
-const ChainMetricsPath = "/chain/metrics"
+// ChainMetricsPath serves the Ethereum poller on the diagnostics server;
+// ChainDutiesPath its validator duty series (only with Validators set).
+const (
+	ChainMetricsPath = "/chain/metrics"
+	ChainDutiesPath  = "/chain/duties"
+)
 
 // Config tunes one agent run. Zero values select documented defaults via
 // withDefaults, except DisableReporting which the CLI defaults to true.
@@ -71,7 +75,10 @@ type Config struct {
 	// Chain restricts detection to one family ("ethereum"/"cosmos") on
 	// mixed hosts where each agent instance handles one chain. Empty =
 	// probe all families.
-	Chain         string
+	Chain string
+	// Validators (Ethereum: indices or 0x pubkeys) turns on duty tracking
+	// (US-1.12); see ethpoll.ParseValidators.
+	Validators    []string
 	SuperviseOpts supervise.Options
 }
 
@@ -108,16 +115,30 @@ func ChainMetricsURL(chain string, port int, metricsAddr, override string) strin
 		return override
 	}
 	if chain == detect.ChainEthereum {
-		host, p, err := net.SplitHostPort(metricsAddr)
-		if err != nil {
-			host, p = "127.0.0.1", "19090"
-		}
-		if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
-			host = "127.0.0.1"
-		}
-		return "http://" + net.JoinHostPort(host, p) + ChainMetricsPath
+		return agentURL(metricsAddr, ChainMetricsPath)
 	}
 	return "http://127.0.0.1:" + strconv.Itoa(port) + "/metrics"
+}
+
+// ChainDutiesURL is where Alloy's standard job scrapes validator duties:
+// the poller's duty endpoint on the diagnostics server, or "" when no
+// validators are configured (no target, no series).
+func ChainDutiesURL(chain, metricsAddr string, validators []string) string {
+	if chain != detect.ChainEthereum || len(validators) == 0 {
+		return ""
+	}
+	return agentURL(metricsAddr, ChainDutiesPath)
+}
+
+func agentURL(metricsAddr, path string) string {
+	host, p, err := net.SplitHostPort(metricsAddr)
+	if err != nil {
+		host, p = "127.0.0.1", "19090"
+	}
+	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, p) + path
 }
 
 func (r *Runner) chainMetricsURL(det *detect.Result) string {
@@ -143,11 +164,14 @@ type Manifest struct {
 	RemoteWriteURL string    `json:"remote_write_url"`
 	Exporter       string    `json:"exporter"`
 	// ChainAPICalls lists every request the Ethereum poller makes against
-	// the node (empty for Cosmos).
-	ChainAPICalls []string    `json:"chain_api_calls,omitempty"`
-	AlloyConfig   string      `json:"alloy_config"`
-	ScrapeJobs    []ScrapeJob `json:"scrape_jobs"`
-	StateDir      string      `json:"state_dir"`
+	// the node (empty for Cosmos), including duty calls when Validators
+	// are set.
+	ChainAPICalls []string `json:"chain_api_calls,omitempty"`
+	// Validators are the configured validators whose duties are tracked.
+	Validators  []string    `json:"validators,omitempty"`
+	AlloyConfig string      `json:"alloy_config"`
+	ScrapeJobs  []ScrapeJob `json:"scrape_jobs"`
+	StateDir    string      `json:"state_dir"`
 }
 
 // Runner holds the prepared state of one agent run.
@@ -226,6 +250,7 @@ func (r *Runner) materialize(det *detect.Result) error {
 	rendered, err := alloycfg.Render(det, alloycfg.Options{
 		RemoteWriteURL:     r.cfg.RemoteWriteURL,
 		ExporterMetricsURL: r.chainMetricsURL(det),
+		DutiesMetricsURL:   ChainDutiesURL(det.Chain, r.cfg.MetricsAddr, r.cfg.Validators),
 		Instance:           r.cfg.Instance,
 		IngestToken:        r.cfg.IngestToken,
 	})
@@ -471,6 +496,16 @@ func (r *Runner) Start(ctx context.Context) error {
 		}
 		p.Handler().ServeHTTP(w, req)
 	})
+	mux.HandleFunc(ChainDutiesPath, func(w http.ResponseWriter, req *http.Request) {
+		r.mu.RLock()
+		p := r.poller
+		r.mu.RUnlock()
+		if p == nil || p.DutiesHandler() == nil {
+			http.NotFound(w, req)
+			return
+		}
+		p.DutiesHandler().ServeHTTP(w, req)
+	})
 	mux.HandleFunc("/manifest", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(r.Manifest())
@@ -499,6 +534,7 @@ func (r *Runner) startPoller(det *detect.Result) {
 	p := ethpoll.New(ethpoll.Config{
 		BeaconURL:    firstURL(det, detect.KindCLBeacon),
 		ExecutionURL: firstURL(det, detect.KindELRPC),
+		Validators:   r.cfg.Validators,
 	})
 	r.mu.Lock()
 	if r.runCtx == nil {
@@ -565,6 +601,9 @@ func buildManifest(det *detect.Result, cfg Config, chainURL, exporterBin string,
 		}
 	}
 	var standard []string
+	if u := ChainDutiesURL(det.Chain, cfg.MetricsAddr, cfg.Validators); u != "" {
+		standard = append(standard, u)
+	}
 	for _, e := range det.Endpoints {
 		if e.Kind == detect.KindELMetrics {
 			standard = append(standard, e.URL)
@@ -576,6 +615,9 @@ func buildManifest(det *detect.Result, cfg Config, chainURL, exporterBin string,
 		exporter = fmt.Sprintf("built-in ethpoll (beacon=%s execution=%s, every %s)",
 			firstURL(det, detect.KindCLBeacon), firstURL(det, detect.KindELRPC), ethpoll.DefaultInterval)
 		calls = ethpoll.Calls
+		if len(cfg.Validators) > 0 {
+			calls = append(append([]string(nil), calls...), ethpoll.DutyCalls...)
+		}
 	}
 	return Manifest{
 		AgentVersion:   version.Version,
@@ -587,6 +629,7 @@ func buildManifest(det *detect.Result, cfg Config, chainURL, exporterBin string,
 		RemoteWriteURL: cfg.RemoteWriteURL,
 		Exporter:       exporter,
 		ChainAPICalls:  calls,
+		Validators:     cfg.Validators,
 		AlloyConfig:    filepath.Join(cfg.StateDir, "config.alloy"),
 		ScrapeJobs: []ScrapeJob{
 			{Name: "hot", Interval: alloycfg.HotInterval, Targets: hot},

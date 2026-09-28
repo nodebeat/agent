@@ -36,6 +36,10 @@ type Options struct {
 	// Cosmos watcher. Defaults to http://127.0.0.1:9090/metrics, which is
 	// what agents too old to send exporter_url still run.
 	ExporterMetricsURL string
+	// DutiesMetricsURL is the Ethereum poller's validator duty endpoint
+	// (http://127.0.0.1:19090/chain/duties), scraped on the standard path:
+	// duties change once per epoch. Empty = no validators configured.
+	DutiesMetricsURL string
 	// Instance labels every series (normally the target host). Defaults to
 	// the detection target.
 	Instance string
@@ -144,6 +148,14 @@ func Render(det *detect.Result, opts Options) (string, error) {
 		p.Hot = append(p.Hot, t)
 	} else {
 		return "", fmt.Errorf("bad exporter metrics URL: %w", err)
+	}
+
+	if det.Chain == detect.ChainEthereum && opts.DutiesMetricsURL != "" {
+		t, err := targetFromURL(opts.DutiesMetricsURL, append(append([]label(nil), base...), label{Key: "role", Value: "validators"}))
+		if err != nil {
+			return "", fmt.Errorf("bad duties metrics URL: %w", err)
+		}
+		p.Standard = append(p.Standard, t)
 	}
 
 	switch det.Chain {

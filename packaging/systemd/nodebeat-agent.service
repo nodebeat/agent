@@ -11,6 +11,8 @@ Group=nodebeat
 EnvironmentFile=/etc/nodebeat/agent.env
 # The ingest token is NOT passed as a flag (argv is world-readable via ps):
 # the agent reads NB_INGEST_TOKEN from this EnvironmentFile directly.
+# NB_VALIDATORS (Ethereum duty tracking) is read the same way, in both
+# standalone and --enrolled mode.
 # Port overrides (devnet ephemeral host ports). install.sh always writes every
 # NB_*_PORT (defaults = standards, metrics 0 = per-client default), so no
 # flag ever expands empty. Re-run install.sh after editing agent.env.
@@ -38,7 +40,7 @@ RestartSec=5s
 # Hardening: read-only host view, writes confined to the state dir, no new
 # privileges, no exec of anything outside the supervised child binaries.
 # Inbound listeners: agent diagnostics (incl. the Ethereum poller's
-# /chain/metrics), Alloy UI and cosmos-validator-watcher all bind localhost;
+# /chain/metrics and /chain/duties), Alloy UI and cosmos-validator-watcher all bind localhost;
 # nothing listens on an external interface.
 NoNewPrivileges=true
 ProtectSystem=strict

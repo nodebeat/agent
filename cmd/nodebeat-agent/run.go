@@ -13,6 +13,7 @@ import (
 	"github.com/nodebeat/agent/internal/agent"
 	"github.com/nodebeat/agent/internal/detect"
 	"github.com/nodebeat/agent/internal/enroll"
+	"github.com/nodebeat/agent/internal/ethpoll"
 )
 
 // runRun starts the supervised agent. SIGINT/SIGTERM stop it gracefully;
@@ -34,6 +35,7 @@ func runRun(args []string) int {
 	enrolled := fs.Bool("enrolled", false, "run from enrollment.json in --state-dir (created by `enroll`); fetches the server pipeline and polls it")
 	pollInterval := fs.Duration("poll-interval", 60*time.Second, "config poll interval in enrolled mode (also the server heartbeat)")
 	chainFlag := fs.String("chain", "", "restrict detection to ethereum or cosmos (empty = auto; use per instance on mixed hosts)")
+	validatorsFlag := fs.String("validators", "", "Ethereum validators to track duties for: comma-separated indices or 0x pubkeys (default $NB_VALIDATORS; empty = no duty alerts)")
 	var ports detect.Ports
 	detect.BindPortFlags(fs, &ports)
 	if err := fs.Parse(args); err != nil {
@@ -44,6 +46,11 @@ func runRun(args []string) int {
 		fmt.Fprintln(os.Stderr, "run:", err)
 		return 2
 	}
+	validators, err := ethpoll.ParseValidators(firstNonEmpty(*validatorsFlag, os.Getenv("NB_VALIDATORS")))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "run: --validators:", err)
+		return 2
+	}
 
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	if *enrolled {
@@ -52,6 +59,7 @@ func runRun(args []string) int {
 			exporterPort: *exporterPort, exporterURL: *exporterURL,
 			metricsAddr: *metricsAddr, alloyUIAddr: *alloyUIAddr,
 			disableReporting: *disableReporting, pollInterval: *pollInterval,
+			validators: validators,
 		})
 	}
 	if *target == "" || *remoteWriteURL == "" {
@@ -76,6 +84,7 @@ func runRun(args []string) int {
 		DisableReporting: *disableReporting,
 		Ports:            ports,
 		Chain:            chain,
+		Validators:       validators,
 	}, logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -119,6 +128,7 @@ type enrolledOptions struct {
 	alloyUIAddr      string
 	disableReporting bool
 	pollInterval     time.Duration
+	validators       []string
 }
 
 // runEnrolled supervises from the server-rendered pipeline stored by
@@ -137,8 +147,9 @@ func runEnrolled(logger *log.Logger, o enrolledOptions) int {
 	defer stop()
 
 	exporterURL := agent.ChainMetricsURL(e.Detection.Chain, o.exporterPort, o.metricsAddr, o.exporterURL)
+	dutiesURL := agent.ChainDutiesURL(e.Detection.Chain, o.metricsAddr, o.validators)
 	fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	remote, err := client.FetchConfig(fetchCtx, e.NodeID, exporterURL)
+	remote, err := client.FetchConfig(fetchCtx, e.NodeID, exporterURL, dutiesURL)
 	cancel()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "run --enrolled: fetch config:", err)
@@ -158,6 +169,7 @@ func runEnrolled(logger *log.Logger, o enrolledOptions) int {
 		MetricsAddr:      o.metricsAddr,
 		AlloyUIAddr:      o.alloyUIAddr,
 		DisableReporting: o.disableReporting,
+		Validators:       o.validators,
 	}, logger)
 	if err := r.PrepareRemote(&det, remote.AlloyConfig); err != nil {
 		fmt.Fprintln(os.Stderr, "run --enrolled:", err)
@@ -178,7 +190,7 @@ func runEnrolled(logger *log.Logger, o enrolledOptions) int {
 				return
 			case <-t.C:
 				pctx, pcancel := context.WithTimeout(ctx, 30*time.Second)
-				latest, err := client.FetchConfig(pctx, e.NodeID, exporterURL)
+				latest, err := client.FetchConfig(pctx, e.NodeID, exporterURL, dutiesURL)
 				pcancel()
 				if err != nil {
 					logger.Printf("agent: config poll failed: %v", err)
