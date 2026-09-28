@@ -19,7 +19,9 @@ groups:
             NAT/port-forwarding, and that the node clock is sane.
 
       - alert: EthereumCLPeersLow
-        expr: sum by (instance) (eth_con_peers) == 0
+        # Connected only: disconnected/connecting counts are bookkeeping and
+        # would hide a node with zero live peers.
+        expr: sum by (instance) (eth_con_peers{state="connected"}) == 0
         for: 10m
         labels:
           severity: warning
@@ -28,7 +30,7 @@ groups:
         annotations:
           summary: "Consensus client has no peers for 10m ({{ $labels.instance }})"
           description: >-
-            Zero libp2p peers for 10 minutes across all directions. Same
+            Zero connected libp2p peers for 10 minutes. Same
             checklist as EL peers, plus CL discovery port (default 9000).
 
       - alert: EthereumReorgDeep

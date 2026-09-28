@@ -27,8 +27,9 @@
 #
 # Installs: binary -> /usr/local/bin, unit -> /etc/systemd/system,
 # env -> /etc/nodebeat/agent.env (0640), user `nodebeat`.
-# Alloy + ethereum-metrics-exporter must already be on PATH for that user
-# (same directory as the agent binary, or /usr/local/bin). Re-runnable.
+# Alloy must already be on PATH for that user (same directory as the agent
+# binary, or /usr/local/bin); Cosmos also needs cosmos-validator-watcher.
+# Ethereum needs nothing else: the agent polls the node itself. Re-runnable.
 set -euo pipefail
 
 BIN=""; TARGET=""; RW_URL=""; INSTANCE=""; INGEST_TOKEN=""
@@ -80,8 +81,12 @@ command -v systemctl >/dev/null || { echo "systemd not found" >&2; exit 1; }
 # The agent resolves these via PATH at startup; fail here with a clear
 # message instead of a crash-looping unit later.
 command -v alloy >/dev/null || { echo "alloy not on PATH (same dir as the agent binary, or /usr/local/bin)" >&2; exit 1; }
-command -v ethereum-metrics-exporter >/dev/null || command -v cosmos-validator-watcher >/dev/null || {
-  echo "no chain exporter on PATH (need ethereum-metrics-exporter and/or cosmos-validator-watcher)" >&2; exit 1; }
+if ! command -v cosmos-validator-watcher >/dev/null; then
+  if [ "$CHAIN" = cosmos ]; then
+    echo "cosmos-validator-watcher not on PATH (required for --chain cosmos)" >&2; exit 1
+  fi
+  [ -n "$CHAIN" ] || echo "note: cosmos-validator-watcher not on PATH (only needed for Cosmos nodes)" >&2
+fi
 
 # 1. Pre-flight via the sibling onboard binary (ships in the same tarball).
 # Child command is echoed first so failures are attributable, not hidden.

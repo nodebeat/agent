@@ -1,4 +1,4 @@
-# Hot path: Cosmos consensus-critical signals, evaluated every 5s, no
+# Hot path: Cosmos consensus-critical signals, evaluated every 2s, no
 # duration guards. Pages via the Alertmanager `paging` route (group_wait: 0s).
 #
 # Metric sources:
@@ -9,15 +9,16 @@
 #     metric prefix depends on client version, so stall rules match both).
 groups:
   - name: cosmos-hot
-    interval: 5s
+    interval: 2s
     # VictoriaMetrics hides the newest 30s of samples by default
     # (-search.latencyOffset) and vmalert shifts eval time back to match
     # (-rule.evalDelay): +30s on every hot page (measured 2026-09-28).
-    # Hot groups only: Alloy flushes remote_write within 5s (default
-    # batch_send_deadline), so a late sample costs one eval, not a flap.
-    eval_delay: 5s
+    # Hot groups only: the agent's Alloy flushes remote_write every 1s
+    # (batch_send_deadline), so 2s covers arrival; a late sample costs one
+    # eval, not a flap.
+    eval_delay: 2s
     params:
-      latency_offset: ["5s"]
+      latency_offset: ["2s"]
     rules:
       - alert: CosmosValidatorJailed
         expr: max by (instance) (cosmos_validator_watcher_is_jailed) == 1

@@ -1,0 +1,354 @@
+# HELP eth_con_beacon_empty_slots_count The number of slots that have expired without a block proposed.
+# TYPE eth_con_beacon_empty_slots_count counter
+eth_con_beacon_empty_slots_count{module="beacon",node="consensus"} 0
+# HELP eth_con_beacon_finality_checkpoint_epochs That epochs of the finality checkpoints.
+# TYPE eth_con_beacon_finality_checkpoint_epochs gauge
+eth_con_beacon_finality_checkpoint_epochs{checkpoint="finalized",module="beacon",node="consensus",state_id="head"} 18
+eth_con_beacon_finality_checkpoint_epochs{checkpoint="justified",module="beacon",node="consensus",state_id="head"} 19
+eth_con_beacon_finality_checkpoint_epochs{checkpoint="previous_justified",module="beacon",node="consensus",state_id="head"} 18
+# HELP eth_con_beacon_proposer_delay The delay of the proposer.
+# TYPE eth_con_beacon_proposer_delay histogram
+eth_con_beacon_proposer_delay_bucket{module="beacon",node="consensus",le="0"} 0
+eth_con_beacon_proposer_delay_bucket{module="beacon",node="consensus",le="1000"} 0
+eth_con_beacon_proposer_delay_bucket{module="beacon",node="consensus",le="2000"} 0
+eth_con_beacon_proposer_delay_bucket{module="beacon",node="consensus",le="3000"} 0
+eth_con_beacon_proposer_delay_bucket{module="beacon",node="consensus",le="4000"} 0
+eth_con_beacon_proposer_delay_bucket{module="beacon",node="consensus",le="5000"} 0
+eth_con_beacon_proposer_delay_bucket{module="beacon",node="consensus",le="6000"} 0
+eth_con_beacon_proposer_delay_bucket{module="beacon",node="consensus",le="7000"} 0
+eth_con_beacon_proposer_delay_bucket{module="beacon",node="consensus",le="8000"} 0
+eth_con_beacon_proposer_delay_bucket{module="beacon",node="consensus",le="9000"} 0
+eth_con_beacon_proposer_delay_bucket{module="beacon",node="consensus",le="10000"} 0
+eth_con_beacon_proposer_delay_bucket{module="beacon",node="consensus",le="11000"} 0
+eth_con_beacon_proposer_delay_bucket{module="beacon",node="consensus",le="12000"} 0
+eth_con_beacon_proposer_delay_bucket{module="beacon",node="consensus",le="+Inf"} 0
+eth_con_beacon_proposer_delay_sum{module="beacon",node="consensus"} 0
+eth_con_beacon_proposer_delay_count{module="beacon",node="consensus"} 0
+# HELP eth_con_beacon_reorg_count The count of reorgs.
+# TYPE eth_con_beacon_reorg_count counter
+eth_con_beacon_reorg_count{module="beacon",node="consensus"} 0
+# HELP eth_con_beacon_reorg_depth The number of reorgs.
+# TYPE eth_con_beacon_reorg_depth counter
+eth_con_beacon_reorg_depth{module="beacon",node="consensus"} 0
+# HELP eth_con_event_time_since_last_subscription_event_ms The amount of time since the last subscription event (in milliseconds).
+# TYPE eth_con_event_time_since_last_subscription_event_ms gauge
+eth_con_event_time_since_last_subscription_event_ms{module="event",node="consensus"} 0
+# HELP eth_con_fork_activated The activation status of the fork (1 for activated).
+# TYPE eth_con_fork_activated gauge
+eth_con_fork_activated{fork="altair",module="fork",node="consensus"} 1
+eth_con_fork_activated{fork="bellatrix",module="fork",node="consensus"} 1
+eth_con_fork_activated{fork="capella",module="fork",node="consensus"} 1
+eth_con_fork_activated{fork="deneb",module="fork",node="consensus"} 1
+eth_con_fork_activated{fork="electra",module="fork",node="consensus"} 1
+eth_con_fork_activated{fork="fulu",module="fork",node="consensus"} 1
+# HELP eth_con_fork_current The current fork.
+# TYPE eth_con_fork_current gauge
+eth_con_fork_current{fork="fulu",module="fork",node="consensus"} 1
+# HELP eth_con_fork_epoch The epoch for the fork.
+# TYPE eth_con_fork_epoch gauge
+eth_con_fork_epoch{fork="altair",module="fork",node="consensus"} 0
+eth_con_fork_epoch{fork="bellatrix",module="fork",node="consensus"} 0
+eth_con_fork_epoch{fork="capella",module="fork",node="consensus"} 0
+eth_con_fork_epoch{fork="deneb",module="fork",node="consensus"} 0
+eth_con_fork_epoch{fork="electra",module="fork",node="consensus"} 0
+eth_con_fork_epoch{fork="fulu",module="fork",node="consensus"} 0
+# HELP eth_con_health_check_results_total Total of health checks results.
+# TYPE eth_con_health_check_results_total counter
+eth_con_health_check_results_total{module="health",node="consensus",result="success"} 64
+# HELP eth_con_health_up Whether the node is up or not.
+# TYPE eth_con_health_up gauge
+eth_con_health_up{module="health",node="consensus"} 1
+# HELP eth_con_node_version The version of the running beacon node.
+# TYPE eth_con_node_version gauge
+eth_con_node_version{module="general",node="consensus",version="Lighthouse/v8.2.2-0aeb774/x86_64-linux"} 1
+# HELP eth_con_peers The count of peers connected to beacon node.
+# TYPE eth_con_peers gauge
+eth_con_peers{direction="inbound",module="general",node="consensus",state="connected"} 1
+eth_con_peers{direction="inbound",module="general",node="consensus",state="connecting"} 0
+eth_con_peers{direction="inbound",module="general",node="consensus",state="disconnected"} 0
+eth_con_peers{direction="inbound",module="general",node="consensus",state="disconnecting"} 0
+eth_con_peers{direction="outbound",module="general",node="consensus",state="connected"} 0
+eth_con_peers{direction="outbound",module="general",node="consensus",state="connecting"} 0
+eth_con_peers{direction="outbound",module="general",node="consensus",state="disconnected"} 0
+eth_con_peers{direction="outbound",module="general",node="consensus",state="disconnecting"} 0
+# HELP eth_con_spec_base_reward_factor The base reward factor.
+# TYPE eth_con_spec_base_reward_factor gauge
+eth_con_spec_base_reward_factor{module="spec",node="consensus"} 64
+# HELP eth_con_spec_config_name The name of the config.
+# TYPE eth_con_spec_config_name gauge
+eth_con_spec_config_name{module="spec",name="testnet",node="consensus"} 1
+# HELP eth_con_spec_deposit_chain_id The chain ID of the deposit contract.
+# TYPE eth_con_spec_deposit_chain_id gauge
+eth_con_spec_deposit_chain_id{module="spec",node="consensus"} 3.151908e+06
+# HELP eth_con_spec_effective_balance_increment The effective balance increment.
+# TYPE eth_con_spec_effective_balance_increment gauge
+eth_con_spec_effective_balance_increment{module="spec",node="consensus"} 1e+09
+# HELP eth_con_spec_epochs_per_sync_committee_period The number of epochs per sync committee period.
+# TYPE eth_con_spec_epochs_per_sync_committee_period gauge
+eth_con_spec_epochs_per_sync_committee_period{module="spec",node="consensus"} 8
+# HELP eth_con_spec_eth1_follow_distance The number of blocks to follow behind the head of the eth1 chain.
+# TYPE eth_con_spec_eth1_follow_distance gauge
+eth_con_spec_eth1_follow_distance{module="spec",node="consensus"} 16
+# HELP eth_con_spec_genesis_delay The number of epochs to wait before processing the genesis block.
+# TYPE eth_con_spec_genesis_delay gauge
+eth_con_spec_genesis_delay{module="spec",node="consensus"} 0
+# HELP eth_con_spec_max_attestations The maximum number of attestations.
+# TYPE eth_con_spec_max_attestations gauge
+eth_con_spec_max_attestations{module="spec",node="consensus"} 128
+# HELP eth_con_spec_max_deposits The maximum number of deposits.
+# TYPE eth_con_spec_max_deposits gauge
+eth_con_spec_max_deposits{module="spec",node="consensus"} 16
+# HELP eth_con_spec_max_effective_balance The maximum effective balance.
+# TYPE eth_con_spec_max_effective_balance gauge
+eth_con_spec_max_effective_balance{module="spec",node="consensus"} 3.2e+10
+# HELP eth_con_spec_max_validators_per_committee The maximum number of validators per committee.
+# TYPE eth_con_spec_max_validators_per_committee gauge
+eth_con_spec_max_validators_per_committee{module="spec",node="consensus"} 2048
+# HELP eth_con_spec_min_deposit_amount The minimum deposit amount.
+# TYPE eth_con_spec_min_deposit_amount gauge
+eth_con_spec_min_deposit_amount{module="spec",node="consensus"} 1e+09
+# HELP eth_con_spec_min_genesis_active_validator_count The minimum number of active validators at genesis.
+# TYPE eth_con_spec_min_genesis_active_validator_count gauge
+eth_con_spec_min_genesis_active_validator_count{module="spec",node="consensus"} 256
+# HELP eth_con_spec_min_sync_committee_participants The minimum number of sync committee participants.
+# TYPE eth_con_spec_min_sync_committee_participants gauge
+eth_con_spec_min_sync_committee_participants{module="spec",node="consensus"} 1
+# HELP eth_con_spec_preset_base The base of the preset.
+# TYPE eth_con_spec_preset_base gauge
+eth_con_spec_preset_base{module="spec",node="consensus",preset="minimal"} 1
+# HELP eth_con_spec_safe_slots_to_update_justified The number of slots to wait before updating the justified checkpoint.
+# TYPE eth_con_spec_safe_slots_to_update_justified gauge
+eth_con_spec_safe_slots_to_update_justified{module="spec",node="consensus"} 0
+# HELP eth_con_spec_seconds_per_eth1_block The number of seconds per ETH1 block.
+# TYPE eth_con_spec_seconds_per_eth1_block gauge
+eth_con_spec_seconds_per_eth1_block{module="spec",node="consensus"} 14
+# HELP eth_con_spec_seconds_per_slot The number of seconds per slot.
+# TYPE eth_con_spec_seconds_per_slot gauge
+eth_con_spec_seconds_per_slot{module="spec",node="consensus"} 6
+# HELP eth_con_spec_slots_per_epoch The number of slots per epoch.
+# TYPE eth_con_spec_slots_per_epoch gauge
+eth_con_spec_slots_per_epoch{module="spec",node="consensus"} 8
+# HELP eth_con_spec_sync_committee_size The sync committee size.
+# TYPE eth_con_spec_sync_committee_size gauge
+eth_con_spec_sync_committee_size{module="spec",node="consensus"} 32
+# HELP eth_con_spec_target_committee_size The target committee size.
+# TYPE eth_con_spec_target_committee_size gauge
+eth_con_spec_target_committee_size{module="spec",node="consensus"} 4
+# HELP eth_con_spec_terminal_block_hash_activation_epoch The epoch at which the terminal block hash is activated.
+# TYPE eth_con_spec_terminal_block_hash_activation_epoch gauge
+eth_con_spec_terminal_block_hash_activation_epoch{module="spec",node="consensus"} 1.8446744073709552e+19
+# HELP eth_con_spec_terminal_total_difficulty The terminal total difficulty.
+# TYPE eth_con_spec_terminal_total_difficulty gauge
+eth_con_spec_terminal_total_difficulty{module="spec",node="consensus"} 0
+# HELP eth_con_spec_terminal_total_difficulty_trillions The terminal total difficulty in trillions.
+# TYPE eth_con_spec_terminal_total_difficulty_trillions gauge
+eth_con_spec_terminal_total_difficulty_trillions{module="spec",node="consensus"} 0
+# HELP eth_con_sync_distance The sync distance of the node.
+# TYPE eth_con_sync_distance gauge
+eth_con_sync_distance{module="sync",node="consensus"} 0
+# HELP eth_con_sync_estimated_highest_slot The estimated highest slot of the network.
+# TYPE eth_con_sync_estimated_highest_slot gauge
+eth_con_sync_estimated_highest_slot{module="sync",node="consensus"} 158
+# HELP eth_con_sync_head_slot The current slot of the node.
+# TYPE eth_con_sync_head_slot gauge
+eth_con_sync_head_slot{module="sync",node="consensus"} 158
+# HELP eth_con_sync_is_optimistic 1 if the node is optimistically syncing.
+# TYPE eth_con_sync_is_optimistic gauge
+eth_con_sync_is_optimistic{module="sync",node="consensus"} 0
+# HELP eth_con_sync_is_syncing 1 if the node is in syncing state.
+# TYPE eth_con_sync_is_syncing gauge
+eth_con_sync_is_syncing{module="sync",node="consensus"} 0
+# HELP eth_con_sync_percentage How synced the node is with the network (0-100%).
+# TYPE eth_con_sync_percentage gauge
+eth_con_sync_percentage{module="sync",node="consensus"} 100
+# HELP eth_exe_block_head_base_fee_per_gas The base fee per gas in the most recent block.
+# TYPE eth_exe_block_head_base_fee_per_gas gauge
+eth_exe_block_head_base_fee_per_gas{ethereum_role="execution",module="block",node_name="execution"} 0
+# HELP eth_exe_block_head_block_size_bytes The size of the most recent block (in bytes).
+# TYPE eth_exe_block_head_block_size_bytes gauge
+eth_exe_block_head_block_size_bytes{ethereum_role="execution",module="block",node_name="execution"} 638
+# HELP eth_exe_block_head_gas_limit The gas limit of the most recent block.
+# TYPE eth_exe_block_head_gas_limit gauge
+eth_exe_block_head_gas_limit{ethereum_role="execution",module="block",node_name="execution"} 5.9529678e+07
+# HELP eth_exe_block_head_gas_used The gas used in the most recent block.
+# TYPE eth_exe_block_head_gas_used gauge
+eth_exe_block_head_gas_used{ethereum_role="execution",module="block",node_name="execution"} 0
+# HELP eth_exe_block_head_transactions_in_block The number of transactions in the most recent block.
+# TYPE eth_exe_block_head_transactions_in_block gauge
+eth_exe_block_head_transactions_in_block{ethereum_role="execution",module="block",node_name="execution"} 0
+# HELP eth_exe_block_most_recent_number The most recent block number.
+# TYPE eth_exe_block_most_recent_number gauge
+eth_exe_block_most_recent_number{ethereum_role="execution",identifier="head",module="block",node_name="execution"} 155
+# HELP eth_exe_block_safe_base_fee_per_gas The base fee per gas in the most recent safe block .
+# TYPE eth_exe_block_safe_base_fee_per_gas counter
+eth_exe_block_safe_base_fee_per_gas{ethereum_role="execution",module="block",node_name="execution"} 0
+# HELP eth_exe_block_safe_block_size_bytes The size of the most recent safe block (in bytes).
+# TYPE eth_exe_block_safe_block_size_bytes counter
+eth_exe_block_safe_block_size_bytes{ethereum_role="execution",module="block",node_name="execution"} 0
+# HELP eth_exe_block_safe_gas_limit The gas limit in the most recent safe block .
+# TYPE eth_exe_block_safe_gas_limit counter
+eth_exe_block_safe_gas_limit{ethereum_role="execution",module="block",node_name="execution"} 0
+# HELP eth_exe_block_safe_gas_used The gas usedin the most recent safe block .
+# TYPE eth_exe_block_safe_gas_used counter
+eth_exe_block_safe_gas_used{ethereum_role="execution",module="block",node_name="execution"} 0
+# HELP eth_exe_block_safe_transaction_count The number of transactions in the most recent safe block.
+# TYPE eth_exe_block_safe_transaction_count counter
+eth_exe_block_safe_transaction_count{ethereum_role="execution",module="block",node_name="execution"} 0
+# HELP eth_exe_chain_id The chain id of the node.
+# TYPE eth_exe_chain_id gauge
+eth_exe_chain_id{ethereum_role="execution",module="general",node_name="execution"} 3.151908e+06
+# HELP eth_exe_gas_price_gwei The current gas price in gwei.
+# TYPE eth_exe_gas_price_gwei gauge
+eth_exe_gas_price_gwei{ethereum_role="execution",module="general",node_name="execution"} 8
+# HELP eth_exe_net_peer_count The amount of peers connected to the node.
+# TYPE eth_exe_net_peer_count gauge
+eth_exe_net_peer_count{ethereum_role="execution",module="web3",node_name="execution"} 1
+# HELP eth_exe_network_id The network id of the node.
+# TYPE eth_exe_network_id gauge
+eth_exe_network_id{ethereum_role="execution",module="general",node_name="execution"} 3.151908e+06
+# HELP eth_exe_sync_current_block The current block of the sync procedure.
+# TYPE eth_exe_sync_current_block gauge
+eth_exe_sync_current_block{ethereum_role="execution",module="sync",node_name="execution"} 0
+# HELP eth_exe_sync_highest_block The highest block of the sync procedure.
+# TYPE eth_exe_sync_highest_block gauge
+eth_exe_sync_highest_block{ethereum_role="execution",module="sync",node_name="execution"} 0
+# HELP eth_exe_sync_is_syncing 1 if the node is in syncing state.
+# TYPE eth_exe_sync_is_syncing gauge
+eth_exe_sync_is_syncing{ethereum_role="execution",module="sync",node_name="execution"} 0
+# HELP eth_exe_sync_percentage How synced the node is with the network (0-100%).
+# TYPE eth_exe_sync_percentage gauge
+eth_exe_sync_percentage{ethereum_role="execution",module="sync",node_name="execution"} 100
+# HELP eth_exe_sync_starting_block The starting block of the sync procedure.
+# TYPE eth_exe_sync_starting_block gauge
+eth_exe_sync_starting_block{ethereum_role="execution",module="sync",node_name="execution"} 0
+# HELP eth_exe_web3_client_version Client version.
+# TYPE eth_exe_web3_client_version gauge
+eth_exe_web3_client_version{ethereum_role="execution",module="web3",node_name="execution",version="Geth/v1.17.6-unstable-854fbb8c-20260915/linux-amd64/go1.27.1"} 1
+# HELP go_gc_duration_seconds A summary of the wall-time pause (stop-the-world) duration in garbage collection cycles.
+# TYPE go_gc_duration_seconds summary
+go_gc_duration_seconds{quantile="0"} 5.8342e-05
+go_gc_duration_seconds{quantile="0.25"} 7.5937e-05
+go_gc_duration_seconds{quantile="0.5"} 8.334e-05
+go_gc_duration_seconds{quantile="0.75"} 0.000107718
+go_gc_duration_seconds{quantile="1"} 0.00023807
+go_gc_duration_seconds_sum 0.00174191
+go_gc_duration_seconds_count 18
+# HELP go_gc_gogc_percent Heap size target percentage configured by the user, otherwise 100. This value is set by the GOGC environment variable, and the runtime/debug.SetGCPercent function. Sourced from /gc/gogc:percent.
+# TYPE go_gc_gogc_percent gauge
+go_gc_gogc_percent 100
+# HELP go_gc_gomemlimit_bytes Go runtime memory limit configured by the user, otherwise math.MaxInt64. This value is set by the GOMEMLIMIT environment variable, and the runtime/debug.SetMemoryLimit function. Sourced from /gc/gomemlimit:bytes.
+# TYPE go_gc_gomemlimit_bytes gauge
+go_gc_gomemlimit_bytes 9.223372036854776e+18
+# HELP go_goroutines Number of goroutines that currently exist.
+# TYPE go_goroutines gauge
+go_goroutines 31
+# HELP go_info Information about the Go environment.
+# TYPE go_info gauge
+go_info{version="go1.25.8"} 1
+# HELP go_memstats_alloc_bytes Number of bytes allocated in heap and currently in use. Equals to /memory/classes/heap/objects:bytes.
+# TYPE go_memstats_alloc_bytes gauge
+go_memstats_alloc_bytes 1.811992e+06
+# HELP go_memstats_alloc_bytes_total Total number of bytes allocated in heap until now, even if released already. Equals to /gc/heap/allocs:bytes.
+# TYPE go_memstats_alloc_bytes_total counter
+go_memstats_alloc_bytes_total 4.48174e+07
+# HELP go_memstats_buck_hash_sys_bytes Number of bytes used by the profiling bucket hash table. Equals to /memory/classes/profiling/buckets:bytes.
+# TYPE go_memstats_buck_hash_sys_bytes gauge
+go_memstats_buck_hash_sys_bytes 1.458071e+06
+# HELP go_memstats_frees_total Total number of heap objects frees. Equals to /gc/heap/frees:objects + /gc/heap/tiny/allocs:objects.
+# TYPE go_memstats_frees_total counter
+go_memstats_frees_total 118059
+# HELP go_memstats_gc_sys_bytes Number of bytes used for garbage collection system metadata. Equals to /memory/classes/metadata/other:bytes.
+# TYPE go_memstats_gc_sys_bytes gauge
+go_memstats_gc_sys_bytes 3.06152e+06
+# HELP go_memstats_heap_alloc_bytes Number of heap bytes allocated and currently in use, same as go_memstats_alloc_bytes. Equals to /memory/classes/heap/objects:bytes.
+# TYPE go_memstats_heap_alloc_bytes gauge
+go_memstats_heap_alloc_bytes 1.811992e+06
+# HELP go_memstats_heap_idle_bytes Number of heap bytes waiting to be used. Equals to /memory/classes/heap/released:bytes + /memory/classes/heap/free:bytes.
+# TYPE go_memstats_heap_idle_bytes gauge
+go_memstats_heap_idle_bytes 4.071424e+06
+# HELP go_memstats_heap_inuse_bytes Number of heap bytes that are in use. Equals to /memory/classes/heap/objects:bytes + /memory/classes/heap/unused:bytes
+# TYPE go_memstats_heap_inuse_bytes gauge
+go_memstats_heap_inuse_bytes 3.629056e+06
+# HELP go_memstats_heap_objects Number of currently allocated objects. Equals to /gc/heap/objects:objects.
+# TYPE go_memstats_heap_objects gauge
+go_memstats_heap_objects 8194
+# HELP go_memstats_heap_released_bytes Number of heap bytes released to OS. Equals to /memory/classes/heap/released:bytes.
+# TYPE go_memstats_heap_released_bytes gauge
+go_memstats_heap_released_bytes 2.08896e+06
+# HELP go_memstats_heap_sys_bytes Number of heap bytes obtained from system. Equals to /memory/classes/heap/objects:bytes + /memory/classes/heap/unused:bytes + /memory/classes/heap/released:bytes + /memory/classes/heap/free:bytes.
+# TYPE go_memstats_heap_sys_bytes gauge
+go_memstats_heap_sys_bytes 7.70048e+06
+# HELP go_memstats_last_gc_time_seconds Number of seconds since 1970 of last garbage collection.
+# TYPE go_memstats_last_gc_time_seconds gauge
+go_memstats_last_gc_time_seconds 1.7895282338468356e+09
+# HELP go_memstats_mallocs_total Total number of heap objects allocated, both live and gc-ed. Semantically a counter version for go_memstats_heap_objects gauge. Equals to /gc/heap/allocs:objects + /gc/heap/tiny/allocs:objects.
+# TYPE go_memstats_mallocs_total counter
+go_memstats_mallocs_total 126253
+# HELP go_memstats_mcache_inuse_bytes Number of bytes in use by mcache structures. Equals to /memory/classes/metadata/mcache/inuse:bytes.
+# TYPE go_memstats_mcache_inuse_bytes gauge
+go_memstats_mcache_inuse_bytes 2416
+# HELP go_memstats_mcache_sys_bytes Number of bytes used for mcache structures obtained from system. Equals to /memory/classes/metadata/mcache/inuse:bytes + /memory/classes/metadata/mcache/free:bytes.
+# TYPE go_memstats_mcache_sys_bytes gauge
+go_memstats_mcache_sys_bytes 15704
+# HELP go_memstats_mspan_inuse_bytes Number of bytes in use by mspan structures. Equals to /memory/classes/metadata/mspan/inuse:bytes.
+# TYPE go_memstats_mspan_inuse_bytes gauge
+go_memstats_mspan_inuse_bytes 69600
+# HELP go_memstats_mspan_sys_bytes Number of bytes used for mspan structures obtained from system. Equals to /memory/classes/metadata/mspan/inuse:bytes + /memory/classes/metadata/mspan/free:bytes.
+# TYPE go_memstats_mspan_sys_bytes gauge
+go_memstats_mspan_sys_bytes 97920
+# HELP go_memstats_next_gc_bytes Number of heap bytes when next garbage collection will take place. Equals to /gc/heap/goal:bytes.
+# TYPE go_memstats_next_gc_bytes gauge
+go_memstats_next_gc_bytes 4.194304e+06
+# HELP go_memstats_other_sys_bytes Number of bytes used for other system allocations. Equals to /memory/classes/other:bytes.
+# TYPE go_memstats_other_sys_bytes gauge
+go_memstats_other_sys_bytes 697993
+# HELP go_memstats_stack_inuse_bytes Number of bytes obtained from system for stack allocator in non-CGO environments. Equals to /memory/classes/heap/stacks:bytes.
+# TYPE go_memstats_stack_inuse_bytes gauge
+go_memstats_stack_inuse_bytes 688128
+# HELP go_memstats_stack_sys_bytes Number of bytes obtained from system for stack allocator. Equals to /memory/classes/heap/stacks:bytes + /memory/classes/os-stacks:bytes.
+# TYPE go_memstats_stack_sys_bytes gauge
+go_memstats_stack_sys_bytes 688128
+# HELP go_memstats_sys_bytes Number of bytes obtained from system. Equals to /memory/classes/total:byte.
+# TYPE go_memstats_sys_bytes gauge
+go_memstats_sys_bytes 1.3719816e+07
+# HELP go_sched_gomaxprocs_threads The current runtime.GOMAXPROCS setting, or the number of operating system threads that can execute user-level Go code simultaneously. Sourced from /sched/gomaxprocs:threads.
+# TYPE go_sched_gomaxprocs_threads gauge
+go_sched_gomaxprocs_threads 2
+# HELP go_threads Number of OS threads created.
+# TYPE go_threads gauge
+go_threads 8
+# HELP process_cpu_seconds_total Total user and system CPU time spent in seconds.
+# TYPE process_cpu_seconds_total counter
+process_cpu_seconds_total 0.86
+# HELP process_max_fds Maximum number of open file descriptors.
+# TYPE process_max_fds gauge
+process_max_fds 524287
+# HELP process_network_receive_bytes_total Number of bytes received by the process over the network.
+# TYPE process_network_receive_bytes_total counter
+process_network_receive_bytes_total 440093
+# HELP process_network_transmit_bytes_total Number of bytes sent by the process over the network.
+# TYPE process_network_transmit_bytes_total counter
+process_network_transmit_bytes_total 361331
+# HELP process_open_fds Number of open file descriptors.
+# TYPE process_open_fds gauge
+process_open_fds 13
+# HELP process_resident_memory_bytes Resident memory size in bytes.
+# TYPE process_resident_memory_bytes gauge
+process_resident_memory_bytes 2.3576576e+07
+# HELP process_start_time_seconds Start time of the process since unix epoch in seconds.
+# TYPE process_start_time_seconds gauge
+process_start_time_seconds 1.78952730273e+09
+# HELP process_virtual_memory_bytes Virtual memory size in bytes.
+# TYPE process_virtual_memory_bytes gauge
+process_virtual_memory_bytes 1.280290816e+09
+# HELP process_virtual_memory_max_bytes Maximum amount of virtual memory available in bytes.
+# TYPE process_virtual_memory_max_bytes gauge
+process_virtual_memory_max_bytes 1.8446744073709552e+19
+# HELP promhttp_metric_handler_requests_in_flight Current number of scrapes being served.
+# TYPE promhttp_metric_handler_requests_in_flight gauge
+promhttp_metric_handler_requests_in_flight 1
+# HELP promhttp_metric_handler_requests_total Total number of scrapes by HTTP status code.
+# TYPE promhttp_metric_handler_requests_total counter
+promhttp_metric_handler_requests_total{code="200"} 2
+promhttp_metric_handler_requests_total{code="500"} 0
+promhttp_metric_handler_requests_total{code="503"} 0

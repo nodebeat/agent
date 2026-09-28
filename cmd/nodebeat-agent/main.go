@@ -14,7 +14,7 @@ Commands:
   version   print the agent version
   detect    probe a node host for chain clients (Ethereum/Cosmos) and render an Alloy config
   enroll    register this host with the SaaS control plane (writes enrollment.json)
-  run       supervise Alloy + chain exporter (auto-selects ethereum-metrics-exporter or cosmos-validator-watcher) against a node host (or --enrolled)`)
+  run       supervise Alloy (+ cosmos-validator-watcher for Cosmos; Ethereum is polled in-process) against a node host (or --enrolled)`)
 }
 
 func main() {

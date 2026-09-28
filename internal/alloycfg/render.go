@@ -1,8 +1,8 @@
 // Package alloycfg renders a Grafana Alloy configuration from a detection
 // result. The generated pipeline mirrors the Increment 1 alerting design:
 //
-//   - hot path (5s scrape): consensus-critical metrics (validator duties from
-//     the bundled chain exporter + native CL metrics)
+//   - hot path (5s scrape): consensus-critical metrics (chain state from the
+//     agent's Ethereum poller or the Cosmos watcher + native CL metrics)
 //   - standard path (15s scrape): execution metrics
 //   - node path (15s scrape): host metrics via Alloy's embedded node_exporter
 //
@@ -31,8 +31,10 @@ type Options struct {
 	// (dev loopback without the proxy, never public).
 	RemoteWriteURL string
 	IngestToken    string
-	// ExporterMetricsURL is the bundled chain exporter's /metrics on the
-	// agent host. Defaults to http://127.0.0.1:9090/metrics.
+	// ExporterMetricsURL is the chain metrics endpoint on the agent host:
+	// the Ethereum poller (http://127.0.0.1:19090/chain/metrics) or the
+	// Cosmos watcher. Defaults to http://127.0.0.1:9090/metrics, which is
+	// what agents too old to send exporter_url still run.
 	ExporterMetricsURL string
 	// Instance labels every series (normally the target host). Defaults to
 	// the detection target.
@@ -47,11 +49,17 @@ const defaultExporterMetricsURL = "http://127.0.0.1:9090/metrics"
 
 // Scrape intervals shared by the renderer, the agent manifest and the docs.
 // Hot carries consensus-critical metrics for the <10s paging path.
+//
+// ChainPollInterval overrides the hot interval for the Ethereum poller's
+// target only (per-target __scrape_interval__, so the job label and series
+// identity stay the same): its ~25 series are what the fastest pages read,
+// while the ~10k native CL series on the same job stay at 5s.
 const (
-	HotInterval      = "5s"
-	HotTimeout       = "4s"
-	StandardInterval = "15s"
-	NodeInterval     = "15s"
+	HotInterval       = "5s"
+	HotTimeout        = "4s"
+	ChainPollInterval = "1s"
+	StandardInterval  = "15s"
+	NodeInterval      = "15s"
 )
 
 // label is one static Prometheus label on a discovery target.
@@ -125,8 +133,14 @@ func Render(det *detect.Result, opts Options) (string, error) {
 		NodeJob:          "prometheus.scrape.node",
 	}
 
-	// Chain-agnostic: duties exporter (ethereum-metrics-exporter or cosmos-validator-watcher)
-	if t, err := targetFromURL(exporterURL, append(base, label{Key: "role", Value: "duties"})); err == nil {
+	// Chain-agnostic: chain metrics (Ethereum poller or cosmos-validator-watcher)
+	duties := append(append([]label(nil), base...), label{Key: "role", Value: "duties"})
+	if det.Chain == detect.ChainEthereum {
+		duties = append(duties,
+			label{Key: "__scrape_interval__", Value: ChainPollInterval},
+			label{Key: "__scrape_timeout__", Value: ChainPollInterval})
+	}
+	if t, err := targetFromURL(exporterURL, duties); err == nil {
 		p.Hot = append(p.Hot, t)
 	} else {
 		return "", fmt.Errorf("bad exporter metrics URL: %w", err)
@@ -208,6 +222,13 @@ prometheus.exporter.unix "node" {
 prometheus.remote_write "default" {
 	endpoint {
 		url = {{q .RemoteWriteURL}}
+
+		// Hot-path budget: flush at least every 1s (default 5s) so a
+		// scraped fault reaches ingest in ~1s. Costs more requests, not
+		// more samples.
+		queue_config {
+			batch_send_deadline = "1s"
+		}
 {{- if .HasIngestToken}}
 		authorization {
 			type        = "Bearer"

@@ -2,9 +2,9 @@
 
 Open-source, read-only monitoring agent for crypto validators and RPC nodes (Ethereum first, Cosmos supported). This is the only NodeBeat component that runs on your infrastructure.
 
-**What it does:** auto-detects the chain client on a target host, renders a Grafana Alloy pipeline, and supervises Alloy + a bundled chain exporter as child processes. Alloy owns scrape + `remote_write` (WAL/retry/TLS) to the NodeBeat SaaS backend or any Prometheus remote-write endpoint.
+**What it does:** auto-detects the chain client on a target host, renders a Grafana Alloy pipeline, and supervises Alloy (plus `cosmos-validator-watcher` for Cosmos) as child processes. For Ethereum it polls the standard Beacon API and JSON-RPC itself with read-only calls (`internal/ethpoll`), so there is no third-party exporter to install. Alloy owns scrape + `remote_write` (WAL/retry/TLS) to the NodeBeat SaaS backend or any Prometheus remote-write endpoint.
 
-**What it never does:** no keys, no SSH, no restarts, no writes outside its state dir, no inbound ports beyond localhost diagnostics.
+**What it never does:** no keys, no SSH, no restarts, no writes outside its state dir, no inbound ports beyond localhost diagnostics — no exceptions.
 
 ## Quick start
 
@@ -28,23 +28,24 @@ Binaries: `nodebeat-agent` (supervisor) and `nodebeat-onboard` (pre-flight check
 
 ## Trust model
 
-* **Read-only:** the agent only supervises its own children (Alloy + exporter) and writes inside `--state-dir` (`config.alloy` 0600, `manifest.json` 0644). It never touches validator keys or restarts clients.
-* **Egress-only:** opens no inbound ports. Diagnostics (`/metrics`, `/manifest`) bind to localhost by default.
-* **Manifest:** every run writes exactly what is collected and where it goes. Inspect it at `http://127.0.0.1:19090/manifest` or `.nodebeat/manifest.json`.
+* **Read-only:** the agent only supervises its own children (Alloy, Cosmos watcher), makes only read calls to the node, and writes inside `--state-dir` (`config.alloy` 0600, `manifest.json` 0644). It never touches validator keys or restarts clients.
+* **Egress-only:** opens no inbound ports. Diagnostics (`/metrics`, `/manifest`, Ethereum `/chain/metrics`) bind to localhost by default.
+* **Manifest:** every run writes exactly what is collected, which API calls the agent makes to the node (`chain_api_calls`), and where data goes. Inspect it at `http://127.0.0.1:19090/manifest` or `.nodebeat/manifest.json`.
 * **Releases:** signed with cosign (keyless Sigstore), checksums + SBOM + SLSA provenance via GoReleaser. See `.goreleaser.yaml`.
 * **Worst case of compromise:** metrics leak only. See `docs/THREAT_MODEL.md`.
 * **Uninstall:** `sudo packaging/uninstall.sh` removes binary, systemd unit, and firewall rule — nothing left.
 
-One agent run monitors one chain. An Ethereum EL+CL pair counts as one chain (single `ethereum-metrics-exporter` with `--execution-url` + `--consensus-url`). For two different chains on one host (e.g. Ethereum + Cosmos), run twice with disjoint `--state-dir`, `--exporter-port`, `--metrics-addr`, and `--alloy-ui-addr`, plus `--chain ethereum` / `--chain cosmos` per instance (empty = auto-detect all families, which misattributes mixed hosts — Ethereum wins and Cosmos duties are missed).
+One agent run monitors one chain. An Ethereum EL+CL pair counts as one chain (one poller reads both). For two different chains on one host (e.g. Ethereum + Cosmos), run twice with disjoint `--state-dir`, `--exporter-port`, `--metrics-addr`, and `--alloy-ui-addr`, plus `--chain ethereum` / `--chain cosmos` per instance (empty = auto-detect all families, which misattributes mixed hosts — Ethereum wins and Cosmos duties are missed).
 
 ## Layout
 
 ```
 cmd/nodebeat-agent/   # detect | enroll | run (incl. --enrolled poll loop)
 cmd/nodebeat-onboard/ # pre-flight checklist
-internal/agent/       # supervisor: detect → render → run Alloy + exporter
+internal/agent/       # supervisor: detect → render → run Alloy (+ Cosmos watcher)
+internal/ethpoll/     # read-only Ethereum poller (Beacon API + JSON-RPC)
 internal/detect/      # chain/client probing (EL/CL, CometBFT)
-internal/alloycfg/    # Alloy pipeline renderer (hot 5s / standard 15s / node 15s)
+internal/alloycfg/    # Alloy pipeline renderer (hot 5s, poller 1s / standard 15s / node 15s)
 internal/enroll/      # SaaS enrollment client (ingest token, 0600)
 internal/supervise/   # child-process supervisor
 internal/version/     # build-time version stamp
@@ -63,7 +64,7 @@ make test
 make vet
 ```
 
-Requires Go 1.26+, plus `alloy` and `ethereum-metrics-exporter` (or `cosmos-validator-watcher` for Cosmos) on `PATH` at runtime — the agent supervises them, it does not re-implement collection.
+Requires Go 1.26+, plus `alloy` (and `cosmos-validator-watcher` for Cosmos) on `PATH` at runtime. The agent reads client-agnostic chain state through the standard APIs and leaves client internals to each client's native metrics.
 
 ## License
 

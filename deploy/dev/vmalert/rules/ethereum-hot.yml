@@ -1,26 +1,27 @@
-# Hot path: consensus-critical signals, evaluated every 5s, no duration
+# Hot path: consensus-critical signals, evaluated every 2s, no duration
 # guards. Pages via the Alertmanager `paging` route (group_wait: 0s).
 #
-# Metric sources (all verified against ethereum-metrics-exporter v0.29.2,
-# see deploy/devnet/ethereum/samples/):
+# Metric sources: the agent's in-process poller (internal/ethpoll), which
+# keeps the names/labels of the retired ethereum-metrics-exporter v0.29.2
+# (see deploy/devnet/ethereum/samples/):
 #   eth_exe_* - execution layer state via JSON-RPC
 #   eth_con_* - consensus layer state via Beacon API
 #
 # Per-validator duty alerts (missed attestations, effectiveness) are NOT here
-# yet: this exporter version has no validator module and the devnet monitors
-# no validators. Head-staleness and sync flags are the paging signals until
-# monitored validators exist (see samples README).
+# yet (US-1.12: Beacon API duties, needs monitored validators). Health, sync
+# and head-staleness are the paging signals until then.
 groups:
   - name: ethereum-hot
-    interval: 5s
+    interval: 2s
     # VictoriaMetrics hides the newest 30s of samples by default
     # (-search.latencyOffset) and vmalert shifts eval time back to match
     # (-rule.evalDelay): +30s on every hot page (measured 2026-09-28).
-    # Hot groups only: Alloy flushes remote_write within 5s (default
-    # batch_send_deadline), so a late sample costs one eval, not a flap.
-    eval_delay: 5s
+    # Hot groups only: the agent's Alloy flushes remote_write every 1s
+    # (batch_send_deadline), so 2s covers arrival; a late sample costs one
+    # eval, not a flap.
+    eval_delay: 2s
     params:
-      latency_offset: ["5s"]
+      latency_offset: ["2s"]
     rules:
       - alert: EthereumCLSyncing
         expr: eth_con_sync_is_syncing == 1
@@ -56,19 +57,32 @@ groups:
           component: consensus
           chain: ethereum
         annotations:
-          summary: "Exporter cannot reach the beacon node ({{ $labels.instance }})"
+          summary: "Agent cannot reach the beacon node ({{ $labels.instance }})"
           description: >-
-            ethereum-metrics-exporter health check for the consensus endpoint
-            failed. Beacon API down, wrong URL, or fast-failing network path
-            between exporter and CL. NOTE: a hung (not refused) endpoint
-            keeps health_up=1; hangs are caught by the head-stall rules.
+            The agent's last Beacon API poll (every 2s, 2s timeout) failed:
+            beacon node down, hung, wrong URL, or the path from the agent is
+            blocked. A validator client using this beacon node cannot attest
+            or propose until it answers again.
+
+      - alert: EthereumExecutionUnhealthy
+        expr: eth_exe_health_up == 0
+        for: 0s
+        labels:
+          severity: critical
+          component: rpc
+          chain: ethereum
+        annotations:
+          summary: "Agent cannot reach the execution client ({{ $labels.instance }})"
+          description: >-
+            The agent's last JSON-RPC poll (every 2s, 2s timeout) failed:
+            execution client down, hung, or its RPC port blocked. The beacon
+            node cannot build or verify payloads, and RPC users get errors.
 
       # Detection budget ≈ window (60s) + backend (~9s): fault → Alertmanager
-      # 55-66s measured on staging 2026-09-28. The flags above are bounded
-      # by the exporter, not us: sync status is polled every 15s and health
-      # needs 3 failed checks 15s apart (ethpandaops/beacon defaults, not
-      # configurable) — refused beacon → Alertmanager 53-65s. True <10s
-      # paging needs a faster collector or duty events (missed attestations).
+      # 55-66s measured on staging 2026-09-28. Backstop for faults the
+      # health flags above miss (a node that answers but stops advancing);
+      # a dead or hung client pages through the health flags instead, which
+      # the agent's 2s poller makes fast.
       - alert: EthereumCLHeadStalled
         expr: increase(eth_con_sync_head_slot[60s]) == 0
         for: 0s

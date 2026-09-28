@@ -329,7 +329,7 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "sum by (instance) (eth_con_peers) or max by (instance) (cometbft_p2p_peers) or max by (instance) (tendermint_p2p_peers)",
+          "expr": "sum by (instance) (eth_con_peers{state=\"connected\"}) or max by (instance) (cometbft_p2p_peers) or max by (instance) (tendermint_p2p_peers)",
           "refId": "G",
           "format": "table",
           "instant": true,

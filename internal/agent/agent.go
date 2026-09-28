@@ -1,14 +1,14 @@
 // Package agent is the nodebeat-agent supervisor: detect the chain
-// client(s) on a target host, render an Alloy pipeline, and run the bundled
-// Alloy + chain exporter binaries as supervised child processes.
+// client(s) on a target host, render an Alloy pipeline, and run Alloy (plus,
+// for Cosmos, the bundled validator watcher) as supervised child processes.
+// Ethereum chain state comes from the in-process ethpoll poller instead of
+// a child exporter.
 //
 // Trust model: the agent only supervises its own children and writes inside
 // its state dir. It never SSHes anywhere, never restarts the validator, and
-// the agent binary itself opens no inbound ports beyond localhost
-// diagnostics. The Cosmos exporter is bound to 127.0.0.1 (only the local
-// Alloy scrapes it). NOTE: the Ethereum exporter has no bind-address flag
-// and listens on 0.0.0.0:<port> (upstream limitation) — operators must
-// drop external access to that port (docs/USER_GUIDE.md "Listening ports").
+// neither it nor its children listen beyond loopback: the poller is served
+// on the agent's own localhost diagnostics server and the Cosmos watcher is
+// bound to 127.0.0.1 (only the local Alloy scrapes either).
 package agent
 
 import (
@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -33,6 +34,7 @@ import (
 
 	"github.com/nodebeat/agent/internal/alloycfg"
 	"github.com/nodebeat/agent/internal/detect"
+	"github.com/nodebeat/agent/internal/ethpoll"
 	"github.com/nodebeat/agent/internal/supervise"
 	"github.com/nodebeat/agent/internal/version"
 )
@@ -43,6 +45,9 @@ const (
 	ChildAlloy    = "alloy"
 )
 
+// ChainMetricsPath serves the Ethereum poller on the diagnostics server.
+const ChainMetricsPath = "/chain/metrics"
+
 // Config tunes one agent run. Zero values select documented defaults via
 // withDefaults, except DisableReporting which the CLI defaults to true.
 type Config struct {
@@ -52,10 +57,10 @@ type Config struct {
 	// IngestToken renders the remote_write Bearer block (standalone agents
 	// writing through the auth-enforcing ingest proxy). Empty omits it.
 	IngestToken      string
-	ExporterBin      string // default: "ethereum-metrics-exporter" or "cosmos-validator-watcher" per chain
+	ExporterBin      string // Cosmos only; default "cosmos-validator-watcher"
 	AlloyBin         string // default "alloy"
-	ExporterPort     int    // default 9090
-	ExporterURL      string // default http://127.0.0.1:<port>/metrics
+	ExporterPort     int    // Cosmos watcher port; default 9090
+	ExporterURL      string // chain metrics URL; default per chain, see ChainMetricsURL
 	StateDir         string // default ".nodebeat"; the only writable path
 	MetricsAddr      string // default "127.0.0.1:19090" (localhost only)
 	AlloyUIAddr      string // default "127.0.0.1:12345" (localhost only)
@@ -71,17 +76,14 @@ type Config struct {
 }
 
 func (c Config) withDefaults() Config {
-	// ExporterBin intentionally has no default here — materializeWithConfig
-	// selects "ethereum-metrics-exporter" vs "cosmos-validator-watcher" per
-	// detected chain when empty, so Cosmos nodes are not forced onto the
-	// Ethereum exporter.
+	// ExporterBin and ExporterURL depend on the detected chain, so they are
+	// resolved in materializeWithConfig / chainMetricsURL.
 	if c.AlloyBin == "" {
 		c.AlloyBin = "alloy"
 	}
 	if c.ExporterPort == 0 {
 		c.ExporterPort = 9090
 	}
-	c.ExporterURL = ExporterURLFor(c.ExporterPort, c.ExporterURL)
 	if c.StateDir == "" {
 		c.StateDir = ".nodebeat"
 	}
@@ -97,14 +99,29 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
-// ExporterURLFor is the bundled exporter's /metrics URL: override when set,
-// else the loopback URL for port. Enrolled agents send it on config polls
-// so the server-rendered pipeline scrapes the port the exporter runs on.
-func ExporterURLFor(port int, override string) string {
+// ChainMetricsURL is where Alloy's hot job scrapes chain metrics: override
+// when set; for Ethereum the poller on the agent's diagnostics server
+// (metricsAddr); otherwise the Cosmos watcher's loopback port. Enrolled
+// agents send it on config polls so the server-rendered pipeline scrapes it.
+func ChainMetricsURL(chain string, port int, metricsAddr, override string) string {
 	if override != "" {
 		return override
 	}
+	if chain == detect.ChainEthereum {
+		host, p, err := net.SplitHostPort(metricsAddr)
+		if err != nil {
+			host, p = "127.0.0.1", "19090"
+		}
+		if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
+			host = "127.0.0.1"
+		}
+		return "http://" + net.JoinHostPort(host, p) + ChainMetricsPath
+	}
 	return "http://127.0.0.1:" + strconv.Itoa(port) + "/metrics"
+}
+
+func (r *Runner) chainMetricsURL(det *detect.Result) string {
+	return ChainMetricsURL(det.Chain, r.cfg.ExporterPort, r.cfg.MetricsAddr, r.cfg.ExporterURL)
 }
 
 // ScrapeJob describes one Alloy scrape job for the data manifest.
@@ -117,17 +134,20 @@ type ScrapeJob struct {
 // Manifest states exactly what the agent collects and where it goes. It is
 // written to the state dir and served on /manifest.
 type Manifest struct {
-	AgentVersion   string      `json:"agent_version"`
-	GeneratedAt    time.Time   `json:"generated_at"`
-	Target         string      `json:"target"`
-	Chain          string      `json:"chain"`
-	ELClient       string      `json:"el_client,omitempty"`
-	CLClient       string      `json:"cl_client,omitempty"`
-	RemoteWriteURL string      `json:"remote_write_url"`
-	Exporter       string      `json:"exporter"`
-	AlloyConfig    string      `json:"alloy_config"`
-	ScrapeJobs     []ScrapeJob `json:"scrape_jobs"`
-	StateDir       string      `json:"state_dir"`
+	AgentVersion   string    `json:"agent_version"`
+	GeneratedAt    time.Time `json:"generated_at"`
+	Target         string    `json:"target"`
+	Chain          string    `json:"chain"`
+	ELClient       string    `json:"el_client,omitempty"`
+	CLClient       string    `json:"cl_client,omitempty"`
+	RemoteWriteURL string    `json:"remote_write_url"`
+	Exporter       string    `json:"exporter"`
+	// ChainAPICalls lists every request the Ethereum poller makes against
+	// the node (empty for Cosmos).
+	ChainAPICalls []string    `json:"chain_api_calls,omitempty"`
+	AlloyConfig   string      `json:"alloy_config"`
+	ScrapeJobs    []ScrapeJob `json:"scrape_jobs"`
+	StateDir      string      `json:"state_dir"`
 }
 
 // Runner holds the prepared state of one agent run.
@@ -144,6 +164,11 @@ type Runner struct {
 	manifest Manifest
 	sup      *supervise.Supervisor
 	registry *prometheus.Registry
+	// poller serves ChainMetricsPath (Ethereum only); pollCancel stops it
+	// and runCtx is Start's context, so reloads can replace the poller.
+	poller     *ethpoll.Poller
+	pollCancel context.CancelFunc
+	runCtx     context.Context
 }
 
 // New builds a Runner. Call Prepare, then Start (or Run for both).
@@ -200,7 +225,7 @@ func (r *Runner) Prepare(ctx context.Context) error {
 func (r *Runner) materialize(det *detect.Result) error {
 	rendered, err := alloycfg.Render(det, alloycfg.Options{
 		RemoteWriteURL:     r.cfg.RemoteWriteURL,
-		ExporterMetricsURL: r.cfg.ExporterURL,
+		ExporterMetricsURL: r.chainMetricsURL(det),
 		Instance:           r.cfg.Instance,
 		IngestToken:        r.cfg.IngestToken,
 	})
@@ -250,19 +275,19 @@ func (r *Runner) ApplyRemoteConfig(alloyConfig string) error {
 // materializeWithConfig writes config + manifest + child specs for det using
 // an already-rendered Alloy pipeline.
 func (r *Runner) materializeWithConfig(det *detect.Result, rendered string) error {
-	// Select exporter binary based on detected chain
-	exporterBinName := r.cfg.ExporterBin
-	if exporterBinName == "" {
-		switch det.Chain {
-		case detect.ChainCosmos:
-			exporterBinName = "cosmos-validator-watcher"
-		default:
-			exporterBinName = "ethereum-metrics-exporter"
+	// Ethereum is polled in-process; only Cosmos runs a child exporter.
+	exporterBin := ""
+	var exporterArgList []string
+	if det.Chain == detect.ChainCosmos {
+		name := r.cfg.ExporterBin
+		if name == "" {
+			name = "cosmos-validator-watcher"
 		}
-	}
-	exporterBin, err := exec.LookPath(exporterBinName)
-	if err != nil {
-		return fmt.Errorf("exporter binary %q: %w", exporterBinName, err)
+		bin, err := exec.LookPath(name)
+		if err != nil {
+			return fmt.Errorf("exporter binary %q: %w", name, err)
+		}
+		exporterBin, exporterArgList = bin, exporterArgs(det, r.cfg.ExporterPort)
 	}
 	alloyBin, err := exec.LookPath(r.cfg.AlloyBin)
 	if err != nil {
@@ -276,7 +301,6 @@ func (r *Runner) materializeWithConfig(det *detect.Result, rendered string) erro
 		return fmt.Errorf("write alloy config: %w", err)
 	}
 
-	exporterArgs := exporterArgs(det, r.cfg.ExporterPort)
 	alloyArgs := []string{
 		"run",
 		"--storage.path=" + filepath.Join(r.cfg.StateDir, "alloy-wal"),
@@ -287,11 +311,12 @@ func (r *Runner) materializeWithConfig(det *detect.Result, rendered string) erro
 	}
 	alloyArgs = append(alloyArgs, r.ConfigPath())
 
-	children := []supervise.Child{
-		{Name: ChildExporter, Path: exporterBin, Args: exporterArgs, Dir: r.cfg.StateDir},
-		{Name: ChildAlloy, Path: alloyBin, Args: alloyArgs, Dir: r.cfg.StateDir},
+	var children []supervise.Child
+	if exporterBin != "" {
+		children = append(children, supervise.Child{Name: ChildExporter, Path: exporterBin, Args: exporterArgList, Dir: r.cfg.StateDir})
 	}
-	manifest := buildManifest(det, r.cfg, exporterBin, exporterArgs)
+	children = append(children, supervise.Child{Name: ChildAlloy, Path: alloyBin, Args: alloyArgs, Dir: r.cfg.StateDir})
+	manifest := buildManifest(det, r.cfg, r.chainMetricsURL(det), exporterBin, exporterArgList)
 	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return err
@@ -360,27 +385,30 @@ func (r *Runner) applyDetection(det *detect.Result) error {
 	// specs (exporter args, alloy bin) and only reload Alloy config via SIGHUP.
 	// materialize updated r.manifest + r.det; restore children but keep the
 	// new config on disk. Manifest's exporter field is reverted to match the
-	// actually-running child.
+	// actually-running child. The in-process poller has no such limit: it is
+	// replaced so it follows the new endpoints.
 	r.mu.Lock()
 	r.children = prevChildren
 	// Revert manifest exporter to reflect the still-running child, but keep
 	// chain/target and scrape jobs from the new detection.
 	runningExporter := ""
-	if len(prevChildren) > 0 {
-		for _, c := range prevChildren {
-			if c.Name == ChildExporter {
-				runningExporter = c.Path + " " + strings.Join(c.Args, " ")
-				break
-			}
+	for _, c := range prevChildren {
+		if c.Name == ChildExporter {
+			runningExporter = c.Path + " " + strings.Join(c.Args, " ")
+			break
 		}
 	}
-	if runningExporter != "" {
+	switch {
+	case runningExporter != "":
 		r.manifest.Exporter = runningExporter
-	} else {
+	case det.Chain != detect.ChainEthereum:
 		r.manifest = prevManifest
 	}
 	manifest := r.manifest
 	r.mu.Unlock()
+	if det.Chain == detect.ChainEthereum && !sameEndpoints(prevDet, det) {
+		r.startPoller(det)
+	}
 	// Persist the reverted manifest.
 	if b, err := json.MarshalIndent(manifest, "", "  "); err == nil {
 		_ = os.WriteFile(r.ManifestPath(), b, 0o644)
@@ -425,10 +453,24 @@ func (r *Runner) Start(ctx context.Context) error {
 
 	r.mu.Lock()
 	r.sup = supervise.New(r.log, r.cfg.SuperviseOpts, children...)
+	r.runCtx = ctx
 	r.mu.Unlock()
+	if det.Chain == detect.ChainEthereum {
+		r.startPoller(det)
+	}
 
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(r.registry, promhttp.HandlerOpts{}))
+	mux.HandleFunc(ChainMetricsPath, func(w http.ResponseWriter, req *http.Request) {
+		r.mu.RLock()
+		p := r.poller
+		r.mu.RUnlock()
+		if p == nil {
+			http.NotFound(w, req)
+			return
+		}
+		p.Handler().ServeHTTP(w, req)
+	})
 	mux.HandleFunc("/manifest", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(r.Manifest())
@@ -451,6 +493,35 @@ func (r *Runner) Start(ctx context.Context) error {
 	return r.sup.Run(ctx)
 }
 
+// startPoller (re)starts the Ethereum poller for det's endpoints. Called
+// from Start and on reloads that change endpoints; the old poller stops.
+func (r *Runner) startPoller(det *detect.Result) {
+	p := ethpoll.New(ethpoll.Config{
+		BeaconURL:    firstURL(det, detect.KindCLBeacon),
+		ExecutionURL: firstURL(det, detect.KindELRPC),
+	})
+	r.mu.Lock()
+	if r.runCtx == nil {
+		r.mu.Unlock()
+		return
+	}
+	if r.pollCancel != nil {
+		r.pollCancel()
+	}
+	ctx, cancel := context.WithCancel(r.runCtx)
+	r.poller, r.pollCancel = p, cancel
+	r.mu.Unlock()
+	go p.Run(ctx)
+}
+
+func sameEndpoints(a, b *detect.Result) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return firstURL(a, detect.KindCLBeacon) == firstURL(b, detect.KindCLBeacon) &&
+		firstURL(a, detect.KindELRPC) == firstURL(b, detect.KindELRPC)
+}
+
 // Run prepares once, then starts supervision.
 func (r *Runner) Run(ctx context.Context) error {
 	if err := r.Prepare(ctx); err != nil {
@@ -459,32 +530,16 @@ func (r *Runner) Run(ctx context.Context) error {
 	return r.Start(ctx)
 }
 
-// exporterArgs maps detection endpoints to the appropriate chain exporter flags.
-//
-// NOTE: the two exporters use different metrics flags: ethereum-metrics-exporter
-// takes --metrics-port <port>, while cosmos-validator-watcher serves its /metrics
-// on --http-addr <host>:<port> (default :8080; we pin 127.0.0.1:<port> to
-// match ExporterURL — only the co-located Alloy scrapes it).
+// exporterArgs maps detection endpoints to cosmos-validator-watcher flags.
+// It serves /metrics on --http-addr (default :8080); we pin
+// 127.0.0.1:<port> to match the chain metrics URL — only the co-located
+// Alloy scrapes it.
 func exporterArgs(det *detect.Result, port int) []string {
-	switch det.Chain {
-	case detect.ChainCosmos:
-		args := []string{"--http-addr", "127.0.0.1:" + strconv.Itoa(port)}
-		if u := firstURL(det, detect.KindCosmosRPC); u != "" {
-			args = append(args, "--node", u)
-		}
-		return args
-	default: // ethereum (and unknown: same flags, detection decides)
-		args := []string{"--metrics-port", strconv.Itoa(port)}
-		if det.Chain == detect.ChainEthereum {
-			if u := firstURL(det, detect.KindELRPC); u != "" {
-				args = append(args, "--execution-url", u)
-			}
-			if u := firstURL(det, detect.KindCLBeacon); u != "" {
-				args = append(args, "--consensus-url", u)
-			}
-		}
-		return args
+	args := []string{"--http-addr", "127.0.0.1:" + strconv.Itoa(port)}
+	if u := firstURL(det, detect.KindCosmosRPC); u != "" {
+		args = append(args, "--node", u)
 	}
+	return args
 }
 
 func firstURL(det *detect.Result, kind string) string {
@@ -496,14 +551,14 @@ func firstURL(det *detect.Result, kind string) string {
 	return ""
 }
 
-func buildManifest(det *detect.Result, cfg Config, exporterBin string, exporterArgs []string) Manifest {
+func buildManifest(det *detect.Result, cfg Config, chainURL, exporterBin string, exporterArgs []string) Manifest {
 	// Manifest target must match the Prometheus instance label (cfg.Instance,
 	// defaulting to the detection target), not the raw target IP.
 	target := cfg.Instance
 	if target == "" {
 		target = det.Target
 	}
-	hot := []string{cfg.ExporterURL}
+	hot := []string{chainURL}
 	for _, e := range det.Endpoints {
 		if e.Kind == detect.KindCLMetrics || e.Kind == detect.KindCosmosMetrics {
 			hot = append(hot, e.URL)
@@ -515,6 +570,13 @@ func buildManifest(det *detect.Result, cfg Config, exporterBin string, exporterA
 			standard = append(standard, e.URL)
 		}
 	}
+	exporter := strings.Join(append([]string{exporterBin}, exporterArgs...), " ")
+	var calls []string
+	if det.Chain == detect.ChainEthereum {
+		exporter = fmt.Sprintf("built-in ethpoll (beacon=%s execution=%s, every %s)",
+			firstURL(det, detect.KindCLBeacon), firstURL(det, detect.KindELRPC), ethpoll.DefaultInterval)
+		calls = ethpoll.Calls
+	}
 	return Manifest{
 		AgentVersion:   version.Version,
 		GeneratedAt:    time.Now().UTC(),
@@ -523,7 +585,8 @@ func buildManifest(det *detect.Result, cfg Config, exporterBin string, exporterA
 		ELClient:       det.ELClient,
 		CLClient:       det.CLClient,
 		RemoteWriteURL: cfg.RemoteWriteURL,
-		Exporter:       strings.Join(append([]string{exporterBin}, exporterArgs...), " "),
+		Exporter:       exporter,
+		ChainAPICalls:  calls,
 		AlloyConfig:    filepath.Join(cfg.StateDir, "config.alloy"),
 		ScrapeJobs: []ScrapeJob{
 			{Name: "hot", Interval: alloycfg.HotInterval, Targets: hot},

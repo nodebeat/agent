@@ -8,12 +8,19 @@ prometheus.exporter.unix "node" {
 prometheus.remote_write "default" {
 	endpoint {
 		url = "https://ingest.example:8428/api/v1/write"
+
+		// Hot-path budget: flush at least every 1s (default 5s) so a
+		// scraped fault reaches ingest in ~1s. Costs more requests, not
+		// more samples.
+		queue_config {
+			batch_send_deadline = "1s"
+		}
 	}
 }
 
 prometheus.scrape "hot" {
 	targets = [
-		{ __address__ = "127.0.0.1:9091", __scheme__ = "http", __metrics_path__ = "/metrics", chain = "ethereum", instance = "reth-node-2", role = "duties" },
+		{ __address__ = "127.0.0.1:9091", __scheme__ = "http", __metrics_path__ = "/metrics", __scrape_interval__ = "1s", __scrape_timeout__ = "1s", chain = "ethereum", instance = "reth-node-2", role = "duties" },
 	]
 	forward_to      = [prometheus.remote_write.default.receiver]
 	scrape_interval = "5s"

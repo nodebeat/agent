@@ -633,7 +633,7 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "sum(eth_con_peers{instance=\"$instance\"})",
+          "expr": "sum(eth_con_peers{instance=\"$instance\",state=\"connected\"})",
           "refId": "B",
           "legendFormat": "CL"
         }

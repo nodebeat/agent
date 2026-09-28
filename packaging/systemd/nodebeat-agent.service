@@ -37,11 +37,9 @@ RestartSec=5s
 
 # Hardening: read-only host view, writes confined to the state dir, no new
 # privileges, no exec of anything outside the supervised child binaries.
-# Inbound listeners: agent diagnostics, Alloy UI and cosmos-validator-watcher
-# bind localhost. EXCEPTION: ethereum-metrics-exporter offers no
-# bind-address flag and listens on 0.0.0.0:<exporter-port> (default 9090) —
-# restrict it with the host firewall (see packaging/firewall/); the agent
-# itself opens no inbound ports.
+# Inbound listeners: agent diagnostics (incl. the Ethereum poller's
+# /chain/metrics), Alloy UI and cosmos-validator-watcher all bind localhost;
+# nothing listens on an external interface.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
