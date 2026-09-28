@@ -126,7 +126,7 @@ func TestExporterArgsCosmos(t *testing.T) {
 	}
 	joined := strings.Join(exporterArgs(det, 9090), " ")
 	for _, want := range []string{
-		"--http-addr :9090",
+		"--http-addr 127.0.0.1:9090",
 		"--node http://node3.example:26657",
 	} {
 		if !strings.Contains(joined, want) {

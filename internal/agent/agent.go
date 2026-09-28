@@ -5,9 +5,10 @@
 // Trust model: the agent only supervises its own children and writes inside
 // its state dir. It never SSHes anywhere, never restarts the validator, and
 // the agent binary itself opens no inbound ports beyond localhost
-// diagnostics. NOTE: the supervised chain exporter has no bind-address flag
-// and listens on 0.0.0.0:9090 (upstream limitation) — operators must restrict
-// it with the host firewall (packaging/firewall/).
+// diagnostics. The Cosmos exporter is bound to 127.0.0.1 (only the local
+// Alloy scrapes it). NOTE: the Ethereum exporter has no bind-address flag
+// and listens on 0.0.0.0:<port> (upstream limitation) — operators must
+// drop external access to that port (docs/USER_GUIDE.md "Listening ports").
 package agent
 
 import (
@@ -80,9 +81,7 @@ func (c Config) withDefaults() Config {
 	if c.ExporterPort == 0 {
 		c.ExporterPort = 9090
 	}
-	if c.ExporterURL == "" {
-		c.ExporterURL = "http://127.0.0.1:" + strconv.Itoa(c.ExporterPort) + "/metrics"
-	}
+	c.ExporterURL = ExporterURLFor(c.ExporterPort, c.ExporterURL)
 	if c.StateDir == "" {
 		c.StateDir = ".nodebeat"
 	}
@@ -96,6 +95,16 @@ func (c Config) withDefaults() Config {
 		c.Instance = c.Target
 	}
 	return c
+}
+
+// ExporterURLFor is the bundled exporter's /metrics URL: override when set,
+// else the loopback URL for port. Enrolled agents send it on config polls
+// so the server-rendered pipeline scrapes the port the exporter runs on.
+func ExporterURLFor(port int, override string) string {
+	if override != "" {
+		return override
+	}
+	return "http://127.0.0.1:" + strconv.Itoa(port) + "/metrics"
 }
 
 // ScrapeJob describes one Alloy scrape job for the data manifest.
@@ -454,11 +463,12 @@ func (r *Runner) Run(ctx context.Context) error {
 //
 // NOTE: the two exporters use different metrics flags: ethereum-metrics-exporter
 // takes --metrics-port <port>, while cosmos-validator-watcher serves its /metrics
-// on --http-addr :<port> (default :8080; we pin :9090 to match ExporterURL).
+// on --http-addr <host>:<port> (default :8080; we pin 127.0.0.1:<port> to
+// match ExporterURL — only the co-located Alloy scrapes it).
 func exporterArgs(det *detect.Result, port int) []string {
 	switch det.Chain {
 	case detect.ChainCosmos:
-		args := []string{"--http-addr", ":" + strconv.Itoa(port)}
+		args := []string{"--http-addr", "127.0.0.1:" + strconv.Itoa(port)}
 		if u := firstURL(det, detect.KindCosmosRPC); u != "" {
 			args = append(args, "--node", u)
 		}

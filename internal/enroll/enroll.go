@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -208,10 +209,17 @@ type NodeConfig struct {
 }
 
 // FetchConfig polls the rendered Alloy pipeline. Each poll doubles as a
-// heartbeat (the server refreshes last_seen).
-func (c *Client) FetchConfig(ctx context.Context, nodeID string) (NodeConfig, error) {
+// heartbeat (the server refreshes last_seen). exporterURL is the agent's
+// bundled-exporter /metrics URL (from --exporter-port/--exporter-url) so
+// the server renders the scrape target the agent actually runs; empty
+// leaves the server default.
+func (c *Client) FetchConfig(ctx context.Context, nodeID, exporterURL string) (NodeConfig, error) {
 	var out NodeConfig
-	resp, err := c.do(ctx, "GET", "/api/v1/nodes/"+nodeID+"/config", nil)
+	path := "/api/v1/nodes/" + url.PathEscape(nodeID) + "/config"
+	if exporterURL != "" {
+		path += "?" + url.Values{"exporter_url": {exporterURL}}.Encode()
+	}
+	resp, err := c.do(ctx, "GET", path, nil)
 	if err != nil {
 		return out, err
 	}

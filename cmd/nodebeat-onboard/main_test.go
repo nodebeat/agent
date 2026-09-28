@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -35,33 +36,61 @@ func TestCheckDiskSpace(t *testing.T) {
 	}
 }
 
-func TestCheckNTP(t *testing.T) {
-	// On most systems, at least one of these is not running.
-	// We test that the function doesn't panic and returns a reasonable result.
-	services := []string{"ntp", "chronyd", "systemd-timesyncd", "definitely-not-a-service-12345"}
-	ok, msg := CheckNTP(services, false)
-	// Result depends on system state; just verify it returns something sensible
-	if !ok {
-		if !strings.Contains(msg, "no NTP service found") {
-			t.Errorf("unexpected fail message: %s", msg)
+// fakeCommands swaps runCommand for canned outputs keyed by the joined argv.
+func fakeCommands(t *testing.T, outputs map[string]string) {
+	t.Helper()
+	orig := runCommand
+	runCommand = func(name string, args ...string) ([]byte, error) {
+		if out, ok := outputs[strings.Join(append([]string{name}, args...), " ")]; ok {
+			return []byte(out), nil
 		}
-	} else {
-		if !strings.Contains(msg, "service active") {
-			t.Errorf("unexpected pass message: %s", msg)
+		return nil, errors.New("inactive")
+	}
+	t.Cleanup(func() { runCommand = orig })
+}
+
+func TestCheckNTP(t *testing.T) {
+	services := []string{"ntp", "chronyd", "systemd-timesyncd"}
+	timesyncd := func(offset string) map[string]string {
+		return map[string]string{
+			"systemctl is-active systemd-timesyncd": "active\n",
+			"timedatectl timesync-status":           "       Server: 1.2.3.4\n       Offset: " + offset + "\n        Delay: 1ms\n",
 		}
 	}
-	t.Logf("ntp check: %s", msg)
-
-	// Test remote suffix
-	ok, msg = CheckNTP(services, true)
-	if !ok {
-		if !strings.Contains(msg, "remote NTP not checked") {
-			t.Errorf("remote fail should mention remote not checked: %s", msg)
-		}
-	} else {
-		if !strings.Contains(msg, "local host only") {
-			t.Errorf("remote pass should mention local host only: %s", msg)
-		}
+	cases := []struct {
+		name      string
+		outputs   map[string]string
+		threshold float64
+		remote    bool
+		wantOK    bool
+		wantMsg   string
+	}{
+		{"no service", nil, 1, false, false, "no NTP service found"},
+		{"no service remote", nil, 1, true, false, "remote NTP not checked"},
+		{"within threshold", timesyncd("+621.861ms"), 1, false, true, "offset 621.861ms"},
+		{"exceeds threshold", timesyncd("+621.861ms"), 0.5, false, false, "exceeds threshold 0.500s"},
+		{"negative offset exceeds", timesyncd("-2.5s"), 1, false, false, "exceeds threshold"},
+		{"remote pass", timesyncd("12us"), 1, true, true, "local host only"},
+		{"chrony", map[string]string{
+			"systemctl is-active chronyd": "active\n",
+			"chronyc tracking":            "Reference ID    : A9FEA97B\nSystem time     : 1.500000000 seconds slow of NTP time\n",
+		}, 1, false, false, "exceeds threshold"},
+		{"ntpd", map[string]string{
+			"systemctl is-active ntp": "active\n",
+			"ntpq -c rv":              "associd=0 status=0615 leap_none, sync_ntp,\nstratum=2, offset=-0.412, sys_jitter=0.1\n",
+		}, 1, false, true, "offset -412µs"},
+		{"offset unavailable", map[string]string{
+			"systemctl is-active chronyd": "active\n",
+		}, 1, false, true, "threshold 1.000s not checked"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeCommands(t, tc.outputs)
+			ok, msg := CheckNTP(services, tc.threshold, tc.remote)
+			if ok != tc.wantOK || !strings.Contains(msg, tc.wantMsg) {
+				t.Errorf("CheckNTP = %v, %q; want %v containing %q", ok, msg, tc.wantOK, tc.wantMsg)
+			}
+		})
 	}
 }
 
@@ -147,15 +176,19 @@ func TestDoCheckDiskSpace(t *testing.T) {
 }
 
 func TestDoCheckNTP(t *testing.T) {
-	ok, msg := doCheckNTP("127.0.0.1", nil)
-	t.Logf("doCheckNTP local: ok=%v msg=%s", ok, msg)
-
-	ok, msg = doCheckNTP("192.168.1.100", nil)
-	t.Logf("doCheckNTP remote: ok=%v msg=%s", ok, msg)
-	if !ok {
-		if !strings.Contains(msg, "remote NTP not checked") {
-			t.Errorf("remote fail should mention remote not checked: %s", msg)
-		}
+	fakeCommands(t, map[string]string{
+		"systemctl is-active systemd-timesyncd": "active\n",
+		"timedatectl timesync-status":           "Offset: +300ms\n",
+	})
+	// --ntp-threshold reaches the check through params.
+	if ok, msg := doCheckNTP("127.0.0.1", map[string]any{"threshold": 0.1}); ok {
+		t.Errorf("0.1s threshold should fail a 300ms offset: %s", msg)
+	}
+	if ok, msg := doCheckNTP("127.0.0.1", map[string]any{"threshold": 1.0}); !ok {
+		t.Errorf("1s threshold should pass a 300ms offset: %s", msg)
+	}
+	if _, msg := doCheckNTP("192.168.1.100", nil); !strings.Contains(msg, "remote NTP not checked") {
+		t.Errorf("remote check should say remote NTP not checked: %s", msg)
 	}
 }
 

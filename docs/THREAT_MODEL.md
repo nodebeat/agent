@@ -14,7 +14,8 @@ The agent runs on customer validator/RPC hosts, next to keys. This document boun
 
 * Never reads validator keys, never holds custody in any form.
 * Never SSHes anywhere, never restarts validators or chain clients, never executes arbitrary commands on the host (it only supervises its own bundled children).
-* The agent binary itself opens no inbound ports beyond localhost diagnostics (`/metrics` + `/manifest` on 127.0.0.1:19090, Alloy UI on 127.0.0.1:12345). EXCEPTION: the supervised chain exporter has no bind-address flag and listens on `0.0.0.0:9090` (default) — this is an upstream limitation, not agent code. Restrict it with the host firewall (`packaging/firewall/`); it serves metrics only, no control interface. No listener on the chain P2P or RPC interfaces.
+* Opens no inbound ports beyond loopback: agent diagnostics (`/metrics` + `/manifest` on 127.0.0.1:19090) and the Alloy UI (127.0.0.1:12345). Host metrics come from node_exporter embedded in Alloy (no socket of its own); the Cosmos collector `cosmos-validator-watcher` is pinned to 127.0.0.1 via `--http-addr`. Native client endpoints (Geth :6060, Lighthouse :5054, CometBFT :26660, …) are the chain client's own listeners; the agent only scrapes them. No listener on the chain P2P or RPC interfaces.
+  EXCEPTION (Ethereum only): ethpandaops `ethereum-metrics-exporter` hardcodes its listen address as `:<port>` (no bind flag upstream), so it listens on `0.0.0.0:9090`. It serves metrics only (no control interface) but exposes node sync and peer state to whoever can reach it. Operators drop non-loopback access to that port with the single rule in `docs/USER_GUIDE.md` ("Listening ports").
 * Never runs as root in supported installs (systemd unit uses `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp`).
 
 ## Worst-case compromise
@@ -29,6 +30,7 @@ They do **not** get: validator keys, withdrawal keys, SSH access, restart/failov
 ## Operator controls
 
 * Review this source (small, Apache-2.0) before installing; verify cosign signatures, checksums, SBOM, and SLSA provenance on releases.
-* Restrict egress (see `packaging/firewall/`): allowlist only the ingest endpoint.
+* Ethereum hosts: block outside access to the exporter port (`docs/USER_GUIDE.md`, "Listening ports").
+* Optionally restrict egress (samples in `packaging/firewall/`, full-host lockdowns that reset ufw and deny all in/out: add SSH and P2P rules first).
 * Treat `--state-dir` as secret (0600 files); `manifest.json` is safe to share, `config.alloy`/`enrollment.json` are not.
 * Uninstall cleanly: `sudo packaging/uninstall.sh`.

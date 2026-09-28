@@ -136,8 +136,9 @@ func runEnrolled(logger *log.Logger, o enrolledOptions) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	exporterURL := agent.ExporterURLFor(o.exporterPort, o.exporterURL)
 	fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	remote, err := client.FetchConfig(fetchCtx, e.NodeID)
+	remote, err := client.FetchConfig(fetchCtx, e.NodeID, exporterURL)
 	cancel()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "run --enrolled: fetch config:", err)
@@ -177,7 +178,7 @@ func runEnrolled(logger *log.Logger, o enrolledOptions) int {
 				return
 			case <-t.C:
 				pctx, pcancel := context.WithTimeout(ctx, 30*time.Second)
-				latest, err := client.FetchConfig(pctx, e.NodeID)
+				latest, err := client.FetchConfig(pctx, e.NodeID, exporterURL)
 				pcancel()
 				if err != nil {
 					logger.Printf("agent: config poll failed: %v", err)

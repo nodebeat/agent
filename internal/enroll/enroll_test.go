@@ -95,3 +95,23 @@ func contains(s, sub string) bool {
 		return false
 	})()
 }
+
+// FetchConfig forwards the agent's exporter URL so the server renders the
+// port the exporter actually runs on; empty sends no query (server default).
+func TestFetchConfigSendsExporterURL(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.URL.Query().Get("exporter_url"))
+		_ = json.NewEncoder(w).Encode(NodeConfig{NodeID: "n1", AlloyConfig: "cfg"})
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "tok", "")
+	for _, u := range []string{"http://127.0.0.1:9091/metrics", ""} {
+		if _, err := c.FetchConfig(context.Background(), "n1", u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(got) != 2 || got[0] != "http://127.0.0.1:9091/metrics" || got[1] != "" {
+		t.Fatalf("exporter_url sent = %q", got)
+	}
+}

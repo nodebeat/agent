@@ -154,18 +154,106 @@ func doCheckDiskSpace(target string, params map[string]any) (bool, string) {
 	return CheckDiskSpace(threshold, isRemote)
 }
 
-// CheckNTP checks if an NTP service is active.
-// services is the list of service names to check (default: ntp, chronyd, systemd-timesyncd).
-// isRemote indicates whether the target is a remote host.
-func CheckNTP(services []string, isRemote bool) (bool, string) {
-	for _, svc := range services {
-		output, err := exec.Command("systemctl", "is-active", svc).Output()
-		if err == nil && strings.TrimSpace(string(output)) == "active" {
-			if isRemote {
-				return true, fmt.Sprintf("%s service active (local host only; remote NTP not checked)", svc)
-			}
-			return true, fmt.Sprintf("%s service active", svc)
+// runCommand runs a local command and returns stdout (swapped in tests).
+var runCommand = func(name string, args ...string) ([]byte, error) {
+	return exec.Command(name, args...).Output()
+}
+
+// ntpOffsetProbe asks a time daemon for its measured clock offset.
+type ntpOffsetProbe struct {
+	cmd   []string
+	parse func(out string) (time.Duration, bool)
+}
+
+// ntpOffsetProbes maps each supported NTP service to the command that
+// reports its current offset from the reference clock.
+var ntpOffsetProbes = map[string]ntpOffsetProbe{
+	"chronyd":           {[]string{"chronyc", "tracking"}, parseChronyOffset},
+	"systemd-timesyncd": {[]string{"timedatectl", "timesync-status"}, parseTimesyncdOffset},
+	"ntp":               {[]string{"ntpq", "-c", "rv"}, parseNtpqOffset},
+}
+
+// parseChronyOffset reads `chronyc tracking`:
+// "System time     : 0.000012345 seconds fast of NTP time".
+func parseChronyOffset(out string) (time.Duration, bool) {
+	for _, line := range strings.Split(out, "\n") {
+		k, v, ok := strings.Cut(line, ":")
+		if !ok || strings.TrimSpace(k) != "System time" {
+			continue
 		}
+		fields := strings.Fields(v)
+		if len(fields) == 0 {
+			return 0, false
+		}
+		secs, err := strconv.ParseFloat(fields[0], 64)
+		if err != nil {
+			return 0, false
+		}
+		return time.Duration(secs * float64(time.Second)), true
+	}
+	return 0, false
+}
+
+// parseTimesyncdOffset reads `timedatectl timesync-status`: "Offset: +1.234ms".
+func parseTimesyncdOffset(out string) (time.Duration, bool) {
+	for _, line := range strings.Split(out, "\n") {
+		k, v, ok := strings.Cut(line, ":")
+		if !ok || strings.TrimSpace(k) != "Offset" {
+			continue
+		}
+		d, err := time.ParseDuration(strings.TrimSpace(v))
+		if err != nil {
+			return 0, false
+		}
+		return d, true
+	}
+	return 0, false
+}
+
+// parseNtpqOffset reads `ntpq -c rv`: "..., offset=0.123, ..." (milliseconds).
+func parseNtpqOffset(out string) (time.Duration, bool) {
+	for _, field := range strings.FieldsFunc(out, func(r rune) bool { return r == ',' || r == '\n' }) {
+		k, v, ok := strings.Cut(strings.TrimSpace(field), "=")
+		if !ok || k != "offset" {
+			continue
+		}
+		ms, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return 0, false
+		}
+		return time.Duration(ms * float64(time.Millisecond)), true
+	}
+	return 0, false
+}
+
+// CheckNTP checks that an NTP service is active and that its measured clock
+// offset is within threshold seconds.
+// services is the list of service names to check (default: ntp, chronyd, systemd-timesyncd).
+// isRemote indicates whether the target is a remote host (check runs locally).
+func CheckNTP(services []string, threshold float64, isRemote bool) (bool, string) {
+	suffix := ""
+	if isRemote {
+		suffix = " (local host only; remote NTP not checked)"
+	}
+	for _, svc := range services {
+		output, err := runCommand("systemctl", "is-active", svc)
+		if err != nil || strings.TrimSpace(string(output)) != "active" {
+			continue
+		}
+		probe, known := ntpOffsetProbes[svc]
+		if !known {
+			return true, fmt.Sprintf("%s service active; offset not measurable (threshold %.3fs not checked)%s", svc, threshold, suffix)
+		}
+		out, err := runCommand(probe.cmd[0], probe.cmd[1:]...)
+		offset, ok := probe.parse(string(out))
+		if err != nil || !ok {
+			return true, fmt.Sprintf("%s service active; offset unavailable from `%s` (threshold %.3fs not checked)%s",
+				svc, strings.Join(probe.cmd, " "), threshold, suffix)
+		}
+		if abs := offset.Abs().Seconds(); abs > threshold {
+			return false, fmt.Sprintf("%s service active but clock offset %s exceeds threshold %.3fs%s", svc, offset, threshold, suffix)
+		}
+		return true, fmt.Sprintf("%s service active, clock offset %s (threshold %.3fs)%s", svc, offset, threshold, suffix)
 	}
 	if isRemote {
 		return false, "no NTP service found running locally (ntp/chronyd/systemd-timesyncd) — remote NTP not checked; run onboard on the node host"
@@ -175,8 +263,14 @@ func CheckNTP(services []string, isRemote bool) (bool, string) {
 
 func doCheckNTP(target string, params map[string]any) (bool, string) {
 	services := []string{"ntp", "chronyd", "systemd-timesyncd"}
+	threshold := 1.0
+	if v, ok := params["threshold"]; ok {
+		if f, ok := v.(float64); ok {
+			threshold = f
+		}
+	}
 	isRemote := target != "" && target != "127.0.0.1" && target != "localhost" && target != "::1"
-	return CheckNTP(services, isRemote)
+	return CheckNTP(services, threshold, isRemote)
 }
 
 // CheckP2PPorts checks if the required P2P ports are reachable on the target.

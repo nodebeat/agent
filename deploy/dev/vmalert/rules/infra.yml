@@ -1,7 +1,8 @@
 # Standard path: host infrastructure from the embedded node_exporter
 # (Alloy job "prometheus.scrape.node", instance = detect target).
 # All rules carry duration guards except the staleness backstop
-# (NodeTelemetryStale, for: 0s — absence has no duration to guard); none page.
+# (NodeTelemetryStale, for: 0s — absence has no duration to guard). Only
+# NodeDiskCritical pages (severity critical); the rest are warnings.
 groups:
   - name: infra
     interval: 30s
@@ -18,6 +19,20 @@ groups:
           description: >-
             A full disk mid-sync corrupts chaindata and forces a multi-day
             resync. Free space now: prune, move chaindata, or grow the disk.
+
+      - alert: NodeDiskCritical
+        expr: |
+          node_filesystem_avail_bytes{mountpoint="/"}
+            / node_filesystem_size_bytes{mountpoint="/"} < 0.05
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Root disk below 5% free ({{ $labels.instance }}, {{ $value }} fraction left)"
+          description: >-
+            Disk-full is imminent: the EL/CL database can corrupt on the next
+            write burst. Free space immediately (prune, delete old logs or
+            snapshots) or stop the client cleanly before it fills.
 
       - alert: NodeMemoryLow
         expr: |
