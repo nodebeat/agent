@@ -13,6 +13,14 @@
 groups:
   - name: ethereum-hot
     interval: 5s
+    # VictoriaMetrics hides the newest 30s of samples by default
+    # (-search.latencyOffset) and vmalert shifts eval time back to match
+    # (-rule.evalDelay): +30s on every hot page (measured 2026-09-28).
+    # Hot groups only: Alloy flushes remote_write within 5s (default
+    # batch_send_deadline), so a late sample costs one eval, not a flap.
+    eval_delay: 5s
+    params:
+      latency_offset: ["5s"]
     rules:
       - alert: EthereumCLSyncing
         expr: eth_con_sync_is_syncing == 1
@@ -55,10 +63,12 @@ groups:
             between exporter and CL. NOTE: a hung (not refused) endpoint
             keeps health_up=1; hangs are caught by the head-stall rules.
 
-      # Detection budget ≈ window (60s) + eval (5s) + dispatch: ~70s
-      # fault-to-page, measured live 2026-09-16. Instantaneous flags below
-      # (syncing, health) page faster; true <10s paging needs duty events
-      # (missed attestations), which require monitored validators.
+      # Detection budget ≈ window (60s) + backend (~9s): fault → Alertmanager
+      # 55-66s measured on staging 2026-09-28. The flags above are bounded
+      # by the exporter, not us: sync status is polled every 15s and health
+      # needs 3 failed checks 15s apart (ethpandaops/beacon defaults, not
+      # configurable) — refused beacon → Alertmanager 53-65s. True <10s
+      # paging needs a faster collector or duty events (missed attestations).
       - alert: EthereumCLHeadStalled
         expr: increase(eth_con_sync_head_slot[60s]) == 0
         for: 0s

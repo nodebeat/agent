@@ -10,6 +10,14 @@
 groups:
   - name: cosmos-hot
     interval: 5s
+    # VictoriaMetrics hides the newest 30s of samples by default
+    # (-search.latencyOffset) and vmalert shifts eval time back to match
+    # (-rule.evalDelay): +30s on every hot page (measured 2026-09-28).
+    # Hot groups only: Alloy flushes remote_write within 5s (default
+    # batch_send_deadline), so a late sample costs one eval, not a flap.
+    eval_delay: 5s
+    params:
+      latency_offset: ["5s"]
     rules:
       - alert: CosmosValidatorJailed
         expr: max by (instance) (cosmos_validator_watcher_is_jailed) == 1
@@ -25,8 +33,8 @@ groups:
             nothing and risks tombstoning on further faults. Check downtime,
             double-sign evidence, and unjail only after the cause is fixed.
 
-      # Detection budget ≈ window (60s) + eval (5s) + dispatch: ~70s
-      # fault-to-page, same design as the Ethereum head-stall rules.
+      # Detection budget ≈ window (60s) + backend (~9s): ~70s fault-to-page,
+      # same design as the Ethereum head-stall rules.
       - alert: CosmosHeadStalled
         expr: |
           (increase(cometbft_consensus_height[60s]) == 0)
