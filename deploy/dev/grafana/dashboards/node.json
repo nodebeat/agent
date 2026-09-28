@@ -1088,7 +1088,7 @@
       "id": 43,
       "type": "timeseries",
       "title": "RPC error ratio by method",
-      "description": "Share of calls that returned a JSON-RPC error. eth_call/eth_estimateGas errors are usually reverts (the caller's fault); RPCMethodErrorRateHigh pages only on methods whose errors point at the node.",
+      "description": "Share of calls that returned a JSON-RPC error. eth_call/eth_estimateGas errors are usually reverts (the caller's fault) and never alert. For node-fault methods, RPCMethodErrorRateHigh pages at 14.4x burn of a 99.9% objective (>1.44% over 1h and 5m) and RPCMethodErrorRateElevated warns at 6x (>0.6% over 6h and 30m).",
       "datasource": {
         "type": "prometheus",
         "uid": "victoriametrics"
@@ -1121,7 +1121,7 @@
       "id": 44,
       "type": "timeseries",
       "title": "RPC p99 latency by method",
-      "description": "p99 of successful calls per scrape interval; gaps mean no calls in that interval. RPCMethodLatencyHigh warns when eth_call stays above 2s for 5m.",
+      "description": "p99 per scrape interval, successful and failed calls separately; gaps mean no calls. A slow failure is a timeout (Geth aborts eth_call at 5s). RPCMethodLatencyHigh warns when a standard read stays above 2s for 5m with at least 100 calls in 5m.",
       "datasource": {
         "type": "prometheus",
         "uid": "victoriametrics"
@@ -1140,7 +1140,7 @@
           },
           "expr": "nodebeat:rpc_latency_p99:seconds{instance=\"$instance\"}",
           "refId": "A",
-          "legendFormat": "{{method}}"
+          "legendFormat": "{{method}} ({{outcome}})"
         }
       ],
       "fieldConfig": {

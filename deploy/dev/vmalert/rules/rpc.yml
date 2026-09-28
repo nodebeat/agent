@@ -2,18 +2,28 @@
 # metrics endpoint (US-1.11). Clients expose these differently, so recording
 # rules normalize them first and alerts/dashboards read only these:
 #   nodebeat:rpc_calls:rate2m{instance, method, outcome="success|failure"}
-#   nodebeat:rpc_latency_p99:seconds{instance, method}   (successful calls)
+#   nodebeat:rpc_latency_p99:seconds{instance, method, outcome}
 #
 # Geth (needs --metrics; verified against the devnet 2026-09-28): the method
 # is in the metric name, rpc_duration_<method>_<success|failure>[_count],
 # and these are RESETTING timers — every scrape returns the calls since the
-# previous scrape (count) and their quantiles (nanoseconds), then clears.
-# So rates are sum_over_time of the per-scrape counts, and the p99 is the
-# p99 of the last scrape interval. If another scraper (e.g. the operator's
-# own Prometheus) also reads Geth, each sees only part of the traffic:
-# ratios and quantiles stay representative, absolute rates undercount.
-# Reth exposes proper counters with a method label
-# (reth_rpc_server_calls_*_total{method}); not mapped until live-verified.
+# previous scrape (count) and their exact quantiles (nanoseconds), then
+# clears. So rates are sum_over_time of the per-scrape counts, and the p99
+# is the p99 of the last scrape interval. If another scraper (e.g. the
+# operator's own Prometheus) also reads Geth, each sees only part of the
+# traffic: ratios and quantiles stay representative, absolute rates
+# undercount. Geth does not count calls rejected for invalid arguments.
+#
+# Reth (verified against the devnet 2026-09-28): cumulative counters with a
+# method label, reth_rpc_server_calls_{successful,failed}_total, and one
+# latency summary for all calls (success and failure together, rolling
+# window) -> outcome="all". Unlike Geth, Reth counts invalid-argument
+# errors as failures, so a caller sending malformed params does burn the
+# error budget of node-fault methods on Reth.
+#
+# Thresholds are defaults, not tuned on production traffic (we have none
+# yet); the reasoning for each is next to it. Revisit with the monthly
+# false-page review (US-1.18).
 groups:
   - name: rpc-recording
     interval: 30s
@@ -26,58 +36,144 @@ groups:
             "outcome", "$2", "__name__", "rpc_duration_(.+)_(success|failure)_count")
           / 120
 
-      # Only intervals that had successful calls: an idle interval reports
-      # 0, which is "no data", not "fast".
+      - record: nodebeat:rpc_calls:rate2m
+        expr: label_replace(rate(reth_rpc_server_calls_successful_total[2m]), "outcome", "success", "", "")
+
+      - record: nodebeat:rpc_calls:rate2m
+        expr: label_replace(rate(reth_rpc_server_calls_failed_total[2m]), "outcome", "failure", "", "")
+
+      # Only intervals that had calls of that outcome: an idle interval
+      # reports 0, which is "no data", not "fast". Failed calls are kept:
+      # reverts return in milliseconds, so a slow failure is a timeout
+      # (Geth aborts eth_call at --rpc.evmtimeout, default 5s).
+      - record: nodebeat:rpc_latency_p99:seconds
+        expr: |
+          label_replace(label_replace(label_replace(
+            {__name__=~"rpc_duration_.+_(success|failure)", quantile="0.99"},
+            "method", "$1", "__name__", "rpc_duration_(.+)_(success|failure)"),
+            "outcome", "$2", "__name__", "rpc_duration_(.+)_(success|failure)"),
+            "quantile", "", "", "") / 1e9
+          and on (instance, method, outcome)
+          label_replace(label_replace(
+            {__name__=~"rpc_duration_.+_(success|failure)_count"} > 0,
+            "method", "$1", "__name__", "rpc_duration_(.+)_(success|failure)_count"),
+            "outcome", "$2", "__name__", "rpc_duration_(.+)_(success|failure)_count")
+
+      # Reth: gate on calls in the last 2m so an idle method's rolling
+      # summary is not read as current latency; its rolling window is
+      # shorter than 2m and reports 0 once it empties, which is no data too.
+      # Reth does not count calls inside JSON-RPC batches per method, so the
+      # agent's batched health polls add no baseline traffic here.
       - record: nodebeat:rpc_latency_p99:seconds
         expr: |
           label_replace(label_replace(
-            {__name__=~"rpc_duration_.+_success", quantile="0.99"},
-            "method", "$1", "__name__", "rpc_duration_(.+)_success"),
-            "quantile", "", "", "") / 1e9
+            reth_rpc_server_calls_time_seconds{quantile="0.99"} > 0,
+            "outcome", "all", "", ""), "quantile", "", "", "")
           and on (instance, method)
-          label_replace(
-            {__name__=~"rpc_duration_.+_success_count"} > 0,
-            "method", "$1", "__name__", "rpc_duration_(.+)_success_count")
+          rate(reth_rpc_server_calls_time_seconds_count[2m]) > 0
 
   - name: rpc-standard
     interval: 30s
     rules:
+      # Error alerts follow the multiwindow, multi-burn-rate pattern from the
+      # Google SRE Workbook ("Alerting on SLOs", table 5-8) against a 99.9%
+      # success objective for methods whose errors are the node's fault. A
+      # healthy node returns ~0 such errors, so 0.1% is already a lot of
+      # budget. Both windows must exceed the burn rate: the long window gives
+      # precision, the short one makes the alert reset soon after recovery.
+      # A total outage pages within a few minutes; a slow leak takes longer,
+      # in proportion to its size. At least 5 failed calls in the short
+      # window keep one-off failures on quiet nodes from paging (the
+      # workbook's low-traffic caveat). On Geth the agent's own 1/s health
+      # polls (eth_syncing, eth_getBlockByNumber, net_peerCount,
+      # eth_gasPrice) act as steady synthetic traffic; Reth does not meter
+      # calls inside batches, so they do not count there.
+      #
+      # Excluded, because their errors are usually the caller's (reverts on
+      # eth_call/estimateGas/createAccessList/simulateV1, nonce/fee
+      # rejections on send*, result/range limits on eth_getLogs, tracer
+      # errors on debug_/trace_), plus the CL<->EL engine API, which the
+      # consensus rules cover. eth_call timeouts are caught by latency below.
+      - alert: RPCMethodErrorRateHigh
+        expr: |
+          (
+            sum by (instance, method) (avg_over_time(nodebeat:rpc_calls:rate2m{outcome="failure", method!~"eth_call|eth_estimateGas|eth_createAccessList|eth_simulateV1|eth_sendRawTransaction|eth_sendTransaction|eth_getLogs|engine_.*|debug_.*|trace_.*"}[1h]))
+              / sum by (instance, method) (avg_over_time(nodebeat:rpc_calls:rate2m{method!~"eth_call|eth_estimateGas|eth_createAccessList|eth_simulateV1|eth_sendRawTransaction|eth_sendTransaction|eth_getLogs|engine_.*|debug_.*|trace_.*"}[1h]))
+          ) > 14.4 * 0.001
+          and on (instance, method)
+          (
+            sum by (instance, method) (avg_over_time(nodebeat:rpc_calls:rate2m{outcome="failure", method!~"eth_call|eth_estimateGas|eth_createAccessList|eth_simulateV1|eth_sendRawTransaction|eth_sendTransaction|eth_getLogs|engine_.*|debug_.*|trace_.*"}[5m]))
+              / sum by (instance, method) (avg_over_time(nodebeat:rpc_calls:rate2m{method!~"eth_call|eth_estimateGas|eth_createAccessList|eth_simulateV1|eth_sendRawTransaction|eth_sendTransaction|eth_getLogs|engine_.*|debug_.*|trace_.*"}[5m]))
+          ) > 14.4 * 0.001
+          and on (instance, method)
+          sum by (instance, method) (avg_over_time(nodebeat:rpc_calls:rate2m{outcome="failure"}[5m])) * 300 >= 5
+        # Two evaluations: one missed or late scrape must not page.
+        for: 1m
+        labels:
+          severity: critical
+          component: rpc
+          chain: ethereum
+        annotations:
+          summary: "{{ $labels.method }} failing: error budget burning 14x ({{ $labels.instance }})"
+          description: >-
+            {{ $labels.method }} returned JSON-RPC errors at more than 1.44% of
+            calls over both the last hour and the last 5 minutes, on a method
+            whose errors are normally the node's fault (not a revert or bad
+            input). Check the execution client logs, disk space, and whether
+            it is still syncing.
+
+      - alert: RPCMethodErrorRateElevated
+        expr: |
+          (
+            sum by (instance, method) (avg_over_time(nodebeat:rpc_calls:rate2m{outcome="failure", method!~"eth_call|eth_estimateGas|eth_createAccessList|eth_simulateV1|eth_sendRawTransaction|eth_sendTransaction|eth_getLogs|engine_.*|debug_.*|trace_.*"}[6h]))
+              / sum by (instance, method) (avg_over_time(nodebeat:rpc_calls:rate2m{method!~"eth_call|eth_estimateGas|eth_createAccessList|eth_simulateV1|eth_sendRawTransaction|eth_sendTransaction|eth_getLogs|engine_.*|debug_.*|trace_.*"}[6h]))
+          ) > 6 * 0.001
+          and on (instance, method)
+          (
+            sum by (instance, method) (avg_over_time(nodebeat:rpc_calls:rate2m{outcome="failure", method!~"eth_call|eth_estimateGas|eth_createAccessList|eth_simulateV1|eth_sendRawTransaction|eth_sendTransaction|eth_getLogs|engine_.*|debug_.*|trace_.*"}[30m]))
+              / sum by (instance, method) (avg_over_time(nodebeat:rpc_calls:rate2m{method!~"eth_call|eth_estimateGas|eth_createAccessList|eth_simulateV1|eth_sendRawTransaction|eth_sendTransaction|eth_getLogs|engine_.*|debug_.*|trace_.*"}[30m]))
+          ) > 6 * 0.001
+          and on (instance, method)
+          sum by (instance, method) (avg_over_time(nodebeat:rpc_calls:rate2m{outcome="failure"}[30m])) * 1800 >= 5
+        for: 1m
+        labels:
+          severity: warning
+          component: rpc
+          chain: ethereum
+        annotations:
+          summary: "{{ $labels.method }} errors elevated: error budget burning 6x ({{ $labels.instance }})"
+          description: >-
+            {{ $labels.method }} returned JSON-RPC errors at more than 0.6% of
+            calls over both the last 6 hours and the last 30 minutes. Not an
+            outage, but a node-side problem that is eating reliability; look
+            at execution client logs for recurring errors.
+
+      # 2s is 40% of Geth's 5s eth_call execution limit (--rpc.evmtimeout):
+      # past it calls fail outright. For scale, provider guidance puts a good
+      # L1 P95 under 500ms measured from the client, network included, so
+      # 2s server-side is clearly degraded, not "slower than a provider".
+      # Standard reads cluster in a narrow latency band, so one threshold
+      # fits them; eth_getLogs (range-dependent), eth_estimateGas (runs the
+      # call many times), debug_/trace_ (10-50x slower by design) and the
+      # engine API are excluded. Failed calls count: a slow failure is a
+      # timeout. A p99 needs samples: at least 100 calls in 5 minutes, so a
+      # "p99" is not just one heavy call on a quiet node. The 5m guard means
+      # every 15s scrape interval for 5 minutes had calls over 2s.
       - alert: RPCMethodLatencyHigh
-        expr: nodebeat:rpc_latency_p99:seconds{method="eth_call"} > 2
+        expr: |
+          max by (instance, method) (nodebeat:rpc_latency_p99:seconds{method=~"(eth|net|web3)_.+", method!~"eth_getLogs|eth_estimateGas"}) > 2
+          and on (instance, method)
+          sum by (instance, method) (avg_over_time(nodebeat:rpc_calls:rate2m[5m])) * 300 >= 100
         for: 5m
         labels:
           severity: warning
           component: rpc
           chain: ethereum
         annotations:
-          summary: "eth_call p99 {{ $value | humanizeDuration }} for 5m ({{ $labels.instance }})"
+          summary: "{{ $labels.method }} p99 {{ $value | humanizeDuration }} for 5m ({{ $labels.instance }})"
           description: >-
-            The slowest 1% of successful eth_call requests took over 2s in
-            every scrape interval for 5 minutes. Users of this endpoint see
-            timeouts. Check CPU and disk I/O on the host (Host row), state
-            cache pressure, and whether a few heavy callers dominate.
-
-      # Methods whose errors are mostly the caller's fault (reverts, bad
-      # nonces/fees, oversized log ranges) and the CL<->EL engine API are
-      # excluded: they would page on normal public traffic. The minimum
-      # traffic keeps one failed call out of a handful from paging.
-      - alert: RPCMethodErrorRateHigh
-        expr: |
-          (
-            sum by (instance, method) (nodebeat:rpc_calls:rate2m{outcome="failure", method!~"eth_call|eth_estimateGas|eth_createAccessList|eth_simulateV1|eth_sendRawTransaction|eth_sendTransaction|eth_getLogs|engine_.*|debug_.*|trace_.*"})
-              / sum by (instance, method) (nodebeat:rpc_calls:rate2m{method!~"eth_call|eth_estimateGas|eth_createAccessList|eth_simulateV1|eth_sendRawTransaction|eth_sendTransaction|eth_getLogs|engine_.*|debug_.*|trace_.*"})
-          ) > 0.01
-          and on (instance, method)
-          sum by (instance, method) (nodebeat:rpc_calls:rate2m) >= 0.5
-        for: 2m
-        labels:
-          severity: critical
-          component: rpc
-          chain: ethereum
-        annotations:
-          summary: "{{ $labels.method }} failing {{ $value | humanizePercentage }} of calls ({{ $labels.instance }})"
-          description: >-
-            More than 1% of {{ $labels.method }} calls returned a JSON-RPC
-            error for 2 minutes, on a method whose errors are normally the
-            node's fault (not a revert or bad input). Check the execution
-            client logs, disk space, and whether it is still syncing.
+            The slowest 1% of {{ $labels.method }} calls (failed ones included:
+            a slow failure is a timeout) took over 2s in every scrape interval
+            for 5 minutes. Users of this endpoint see timeouts. Check CPU and
+            disk I/O on the host (Host row), state cache pressure, and whether
+            a few heavy callers dominate.
