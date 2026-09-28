@@ -1050,6 +1050,105 @@
         "defaults": {},
         "overrides": []
       }
+    },
+    {
+      "id": 42,
+      "type": "timeseries",
+      "title": "RPC calls by method",
+      "description": "JSON-RPC calls per second by method (2m rate), from the execution client's own metrics. Includes the agent's own 1/s health polls (eth_syncing, eth_getBlockByNumber, net_peerCount, eth_gasPrice). Geth needs --metrics.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 48,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "sum by (method) (nodebeat:rpc_calls:rate2m{instance=\"$instance\"})",
+          "refId": "A",
+          "legendFormat": "{{method}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 43,
+      "type": "timeseries",
+      "title": "RPC error ratio by method",
+      "description": "Share of calls that returned a JSON-RPC error. eth_call/eth_estimateGas errors are usually reverts (the caller's fault); RPCMethodErrorRateHigh pages only on methods whose errors point at the node.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 48,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "sum by (method) (nodebeat:rpc_calls:rate2m{instance=\"$instance\",outcome=\"failure\"}) / sum by (method) (nodebeat:rpc_calls:rate2m{instance=\"$instance\"})",
+          "refId": "A",
+          "legendFormat": "{{method}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 44,
+      "type": "timeseries",
+      "title": "RPC p99 latency by method",
+      "description": "p99 of successful calls per scrape interval; gaps mean no calls in that interval. RPCMethodLatencyHigh warns when eth_call stays above 2s for 5m.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 48,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "nodebeat:rpc_latency_p99:seconds{instance=\"$instance\"}",
+          "refId": "A",
+          "legendFormat": "{{method}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
     }
   ]
 }

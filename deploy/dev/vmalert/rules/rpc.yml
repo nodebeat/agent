@@ -1,0 +1,83 @@
+# Standard path: per-method JSON-RPC quality from the execution client's own
+# metrics endpoint (US-1.11). Clients expose these differently, so recording
+# rules normalize them first and alerts/dashboards read only these:
+#   nodebeat:rpc_calls:rate2m{instance, method, outcome="success|failure"}
+#   nodebeat:rpc_latency_p99:seconds{instance, method}   (successful calls)
+#
+# Geth (needs --metrics; verified against the devnet 2026-09-28): the method
+# is in the metric name, rpc_duration_<method>_<success|failure>[_count],
+# and these are RESETTING timers — every scrape returns the calls since the
+# previous scrape (count) and their quantiles (nanoseconds), then clears.
+# So rates are sum_over_time of the per-scrape counts, and the p99 is the
+# p99 of the last scrape interval. If another scraper (e.g. the operator's
+# own Prometheus) also reads Geth, each sees only part of the traffic:
+# ratios and quantiles stay representative, absolute rates undercount.
+# Reth exposes proper counters with a method label
+# (reth_rpc_server_calls_*_total{method}); not mapped until live-verified.
+groups:
+  - name: rpc-recording
+    interval: 30s
+    rules:
+      - record: nodebeat:rpc_calls:rate2m
+        expr: |
+          label_replace(label_replace(
+            sum_over_time({__name__=~"rpc_duration_.+_(success|failure)_count"}[2m]) keep_metric_names,
+            "method", "$1", "__name__", "rpc_duration_(.+)_(success|failure)_count"),
+            "outcome", "$2", "__name__", "rpc_duration_(.+)_(success|failure)_count")
+          / 120
+
+      # Only intervals that had successful calls: an idle interval reports
+      # 0, which is "no data", not "fast".
+      - record: nodebeat:rpc_latency_p99:seconds
+        expr: |
+          label_replace(label_replace(
+            {__name__=~"rpc_duration_.+_success", quantile="0.99"},
+            "method", "$1", "__name__", "rpc_duration_(.+)_success"),
+            "quantile", "", "", "") / 1e9
+          and on (instance, method)
+          label_replace(
+            {__name__=~"rpc_duration_.+_success_count"} > 0,
+            "method", "$1", "__name__", "rpc_duration_(.+)_success_count")
+
+  - name: rpc-standard
+    interval: 30s
+    rules:
+      - alert: RPCMethodLatencyHigh
+        expr: nodebeat:rpc_latency_p99:seconds{method="eth_call"} > 2
+        for: 5m
+        labels:
+          severity: warning
+          component: rpc
+          chain: ethereum
+        annotations:
+          summary: "eth_call p99 {{ $value | humanizeDuration }} for 5m ({{ $labels.instance }})"
+          description: >-
+            The slowest 1% of successful eth_call requests took over 2s in
+            every scrape interval for 5 minutes. Users of this endpoint see
+            timeouts. Check CPU and disk I/O on the host (Host row), state
+            cache pressure, and whether a few heavy callers dominate.
+
+      # Methods whose errors are mostly the caller's fault (reverts, bad
+      # nonces/fees, oversized log ranges) and the CL<->EL engine API are
+      # excluded: they would page on normal public traffic. The minimum
+      # traffic keeps one failed call out of a handful from paging.
+      - alert: RPCMethodErrorRateHigh
+        expr: |
+          (
+            sum by (instance, method) (nodebeat:rpc_calls:rate2m{outcome="failure", method!~"eth_call|eth_estimateGas|eth_createAccessList|eth_simulateV1|eth_sendRawTransaction|eth_sendTransaction|eth_getLogs|engine_.*|debug_.*|trace_.*"})
+              / sum by (instance, method) (nodebeat:rpc_calls:rate2m{method!~"eth_call|eth_estimateGas|eth_createAccessList|eth_simulateV1|eth_sendRawTransaction|eth_sendTransaction|eth_getLogs|engine_.*|debug_.*|trace_.*"})
+          ) > 0.01
+          and on (instance, method)
+          sum by (instance, method) (nodebeat:rpc_calls:rate2m) >= 0.5
+        for: 2m
+        labels:
+          severity: critical
+          component: rpc
+          chain: ethereum
+        annotations:
+          summary: "{{ $labels.method }} failing {{ $value | humanizePercentage }} of calls ({{ $labels.instance }})"
+          description: >-
+            More than 1% of {{ $labels.method }} calls returned a JSON-RPC
+            error for 2 minutes, on a method whose errors are normally the
+            node's fault (not a revert or bad input). Check the execution
+            client logs, disk space, and whether it is still syncing.
