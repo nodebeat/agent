@@ -166,3 +166,19 @@ func TestStableRunResetsFailureStreak(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 	}
 }
+
+// A child whose binary cannot start must still exhaust the failure budget.
+// Regression: lastStart was only set on successful starts, so every failed
+// start looked like a long stable run and reset the streak forever.
+func TestGivesUpWhenChildCannotStart(t *testing.T) {
+	log := &memLogger{}
+	opts := testOpts()
+	opts.StableAfter = 50 * time.Millisecond
+	sup := New(log, opts, Child{Name: "ghost", Path: filepath.Join(t.TempDir(), "missing-binary")})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := sup.Run(ctx)
+	if err == nil || !strings.Contains(err.Error(), "giving up") {
+		t.Fatalf("Run() = %v, want give-up error (log:\n%s)", err, log.String())
+	}
+}

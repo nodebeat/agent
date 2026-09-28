@@ -405,6 +405,40 @@ func TestDetectCosmosFullNode(t *testing.T) {
 	}
 }
 
+func TestDetectCosmosBareVersionProbesMetrics(t *testing.T) {
+	// Real CometBFT /status reports a bare version ("1.0.0", no client
+	// token — verified live on cometbft v1.0.0). The client is
+	// unidentifiable, but the metrics endpoint must still be probed or
+	// the Cosmos hot-path rules go blind.
+	cosmosRPC := cometBFTRPCServer(t, "1.0.0")
+	defer cosmosRPC.Close()
+	cosmosM := metricsServer(t, "/metrics")
+	defer cosmosM.Close()
+
+	res, err := detectWith(context.Background(), "127.0.0.1",
+		Ports{
+			CosmosRPC:     portOf(t, cosmosRPC.URL),
+			CosmosREST:    freePort(t),
+			CosmosMetrics: portOf(t, cosmosM.URL),
+		},
+		"",
+		nil,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := endpointKinds(res)
+	url, ok := kinds[KindCosmosMetrics]
+	if !ok {
+		t.Fatalf("missing %q for bare-version node (have %v)", KindCosmosMetrics, kinds)
+	}
+	if got := portOf(t, url); got != portOf(t, cosmosM.URL) {
+		t.Errorf("cosmos-metrics port = %d, want override %d", got, portOf(t, cosmosM.URL))
+	}
+}
+
 func TestDetectCosmosRPCOnly(t *testing.T) {
 	cosmosRPC := cometBFTRPCServer(t, "tendermint/0.34.0")
 	defer cosmosRPC.Close()
@@ -428,5 +462,33 @@ func TestDetectCosmosRPCOnly(t *testing.T) {
 	}
 	if _, ok := kinds[KindCosmosREST]; ok {
 		t.Errorf("unexpected %q for closed port", KindCosmosREST)
+	}
+}
+
+func TestDetectCosmosTendermintProbesMetrics(t *testing.T) {
+	// Legacy Tendermint identifies as "tendermint", which has no metrics
+	// table entry; it must fall back to the standard CometBFT layout
+	// instead of dropping consensus metrics.
+	cosmosRPC := cometBFTRPCServer(t, "tendermint/0.34.0")
+	defer cosmosRPC.Close()
+	cosmosM := metricsServer(t, "/metrics")
+	defer cosmosM.Close()
+
+	res, err := detectWith(context.Background(), "127.0.0.1",
+		Ports{
+			CosmosRPC:     portOf(t, cosmosRPC.URL),
+			CosmosREST:    freePort(t),
+			CosmosMetrics: portOf(t, cosmosM.URL),
+		},
+		"",
+		nil,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := endpointKinds(res)[KindCosmosMetrics]; !ok {
+		t.Fatalf("missing %q for tendermint node (have %v)", KindCosmosMetrics, endpointKinds(res))
 	}
 }

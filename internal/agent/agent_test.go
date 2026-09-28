@@ -115,6 +115,32 @@ func TestExporterArgs(t *testing.T) {
 	}
 }
 
+func TestExporterArgsCosmos(t *testing.T) {
+	det := &detect.Result{
+		Target: "node3.example",
+		Chain:  detect.ChainCosmos,
+		Endpoints: []detect.Endpoint{
+			{Kind: detect.KindCosmosRPC, URL: "http://node3.example:26657"},
+			{Kind: detect.KindCosmosMetrics, URL: "http://node3.example:26660/metrics"},
+		},
+	}
+	joined := strings.Join(exporterArgs(det, 9090), " ")
+	for _, want := range []string{
+		"--http-addr :9090",
+		"--node http://node3.example:26657",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("cosmos exporter args %q missing %q", joined, want)
+		}
+	}
+	if strings.Contains(joined, "--metrics-port") {
+		t.Errorf("cosmos watcher has no --metrics-port flag, got %q", joined)
+	}
+	if strings.Contains(joined, "--execution-url") || strings.Contains(joined, "--consensus-url") {
+		t.Errorf("cosmos args must not carry ethereum flags, got %q", joined)
+	}
+}
+
 func TestManifestContents(t *testing.T) {
 	m := buildManifest(fullFixture(), Config{
 		RemoteWriteURL: "https://ingest:8428/api/v1/write",

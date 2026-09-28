@@ -302,20 +302,23 @@ func detectWith(ctx context.Context, target string, ports Ports, chain string, c
 				res.Chain = ChainCosmos
 			}
 			res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindCosmosRPC, URL: cosmosRPC})
-			if name := IdentifyCosmos(version); name != "" {
-				if u, ok := overriddenMetricsURL(target, name, ports.CosmosMetrics, cometBFTM); ok {
-					if reachable(ctx, httpClient, u) {
-						res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindCosmosMetrics, URL: u})
-					}
-				}
+			// Real CometBFT /status often reports a bare version ("1.0.0",
+			// no client token — verified live on cometbft v1.0.0), and
+			// legacy Tendermint nodes identify as "tendermint", which has
+			// no table entry. RPC reachable still means CometBFT-family
+			// with the standard metrics layout (:26660/metrics), so fall
+			// back to it instead of silently dropping consensus metrics
+			// (which would blind the CosmosHeadStalled hot-path rule).
+			name := IdentifyCosmos(version)
+			if _, known := cometBFTM[name]; !known {
+				name = "cometbft"
 			}
-			// Also probe REST for additional info
+			if u, ok := overriddenMetricsURL(target, name, ports.CosmosMetrics, cometBFTM); ok && reachable(ctx, httpClient, u) {
+				res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindCosmosMetrics, URL: u})
+			}
 			cosmosREST := "http://" + net.JoinHostPort(target, strconv.Itoa(ports.CosmosREST))
-			if version2, err := probeCosmosREST(ctx, httpClient, cosmosREST); err == nil {
+			if _, err := probeCosmosREST(ctx, httpClient, cosmosREST); err == nil {
 				res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindCosmosREST, URL: cosmosREST})
-				if name := IdentifyCosmos(version2); name != "" {
-					// REST doesn't have native metrics endpoint beyond what RPC gives
-				}
 			}
 		}
 	}

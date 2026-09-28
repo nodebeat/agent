@@ -252,7 +252,7 @@ func (s *Supervisor) runOnce(ctx context.Context, c *childState) error {
 		return fmt.Errorf("supervise: %s stderr pipe: %w", c.spec.Name, err)
 	}
 	if err := cmd.Start(); err != nil {
-		c.setExited(fmt.Sprintf("start failed: %v", err))
+		c.setStartFailed(fmt.Sprintf("start failed: %v", err))
 		return nil
 	}
 	c.setRunning(cmd)
@@ -339,6 +339,18 @@ func (c *childState) setRunning(cmd *exec.Cmd) {
 	c.cmd = cmd
 	c.running = true
 	c.terminating = false
+	c.lastStart = time.Now()
+}
+
+// setStartFailed records a failed start as an instant exit. lastStart is the
+// attempt time: left stale, keepAlive would read every failed start as a
+// long stable run, reset the streak, and retry at base delay forever.
+func (c *childState) setStartFailed(s string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cmd = nil
+	c.running = false
+	c.lastExit = s
 	c.lastStart = time.Now()
 }
 

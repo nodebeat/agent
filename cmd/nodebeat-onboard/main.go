@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -43,6 +44,12 @@ func main() {
 		log.SetFlags(log.LstdFlags | log.Lshortfile)
 	}
 	ports = ports.WithDefaults()
+	chainName, err := detect.ParseChainFilter(*chain)
+	if err != nil || chainName == "" {
+		fmt.Fprintf(os.Stderr, "onboard: --chain must be ethereum or cosmos, got %q\n", *chain)
+		os.Exit(2)
+	}
+	*chain = chainName
 
 	checks := []OnboardCheck{
 		{Name: "disk", Required: *checkDisk, Check: doCheckDiskSpace, Params: map[string]any{"threshold": *diskThreshold}},
@@ -82,7 +89,7 @@ func main() {
 		fmt.Println("=== Cosmos Detection ===")
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		det, err := detect.DetectWithPorts(ctx, *target, ports)
+		det, err := detect.DetectFiltered(ctx, *target, ports, detect.ChainCosmos)
 		if err != nil {
 			fmt.Printf("  [cosmos-detect] FAIL - %v\n", err)
 			failed++
@@ -95,7 +102,7 @@ func main() {
 		fmt.Println("=== Ethereum Detection ===")
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		det, err := detect.DetectWithPorts(ctx, *target, ports)
+		det, err := detect.DetectFiltered(ctx, *target, ports, detect.ChainEthereum)
 		if err != nil {
 			fmt.Printf("  [eth-detect] FAIL - %v\n", err)
 			failed++
@@ -113,18 +120,10 @@ func main() {
 	}
 }
 
-func doCheckDiskSpace(target string, params map[string]any) (bool, string) {
-	threshold := 15.0
-	if v, ok := params["threshold"]; ok {
-		if f, ok := v.(float64); ok {
-			threshold = f
-		}
-	}
-
-	// Onboarding runs on the target host in production (or via SSH). When
-	// --target is remote, we can only check the local host and must warn that
-	// the result may not reflect the remote node's disk.
-	isRemote := target != "" && target != "127.0.0.1" && target != "localhost" && target != "::1"
+// CheckDiskSpace checks if the root filesystem has enough free space.
+// threshold is the minimum free percentage (e.g., 15.0 for 15%).
+// isRemote indicates whether the target is a remote host (check runs locally).
+func CheckDiskSpace(threshold float64, isRemote bool) (bool, string) {
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs("/", &stat); err != nil {
 		return false, fmt.Sprintf("statfs failed: %v", err)
@@ -143,9 +142,22 @@ func doCheckDiskSpace(target string, params map[string]any) (bool, string) {
 	return true, fmt.Sprintf("disk free %.1f%% (threshold %.1f%%)%s", pct, threshold, suffix)
 }
 
-func doCheckNTP(target string, params map[string]any) (bool, string) {
-	services := []string{"ntp", "chronyd", "systemd-timesyncd"}
+func doCheckDiskSpace(target string, params map[string]any) (bool, string) {
+	threshold := 15.0
+	if v, ok := params["threshold"]; ok {
+		if f, ok := v.(float64); ok {
+			threshold = f
+		}
+	}
+
 	isRemote := target != "" && target != "127.0.0.1" && target != "localhost" && target != "::1"
+	return CheckDiskSpace(threshold, isRemote)
+}
+
+// CheckNTP checks if an NTP service is active.
+// services is the list of service names to check (default: ntp, chronyd, systemd-timesyncd).
+// isRemote indicates whether the target is a remote host.
+func CheckNTP(services []string, isRemote bool) (bool, string) {
 	for _, svc := range services {
 		output, err := exec.Command("systemctl", "is-active", svc).Output()
 		if err == nil && strings.TrimSpace(string(output)) == "active" {
@@ -161,6 +173,42 @@ func doCheckNTP(target string, params map[string]any) (bool, string) {
 	return false, "no NTP service found running (ntp/chronyd/systemd-timesyncd)"
 }
 
+func doCheckNTP(target string, params map[string]any) (bool, string) {
+	services := []string{"ntp", "chronyd", "systemd-timesyncd"}
+	isRemote := target != "" && target != "127.0.0.1" && target != "localhost" && target != "::1"
+	return CheckNTP(services, isRemote)
+}
+
+// CheckP2PPorts checks if the required P2P ports are reachable on the target.
+// chain specifies the chain type ("ethereum" or "cosmos").
+// ports is a map of port names to port numbers (elP2P, clP2P, cosmosP2P).
+func CheckP2PPorts(target, chain string, ports map[string]int) (bool, string) {
+	var portList []int
+	switch strings.ToLower(chain) {
+	case "ethereum":
+		portList = []int{ports["elP2P"], ports["clP2P"]}
+	case "cosmos":
+		portList = []int{ports["cosmosP2P"]}
+	default:
+		portList = []int{ports["elP2P"], ports["cosmosP2P"], ports["clP2P"]}
+	}
+
+	var failed []string
+	for _, port := range portList {
+		conn, err := net.DialTimeout("tcp", net.JoinHostPort(target, strconv.Itoa(port)), 3*time.Second)
+		if err != nil {
+			failed = append(failed, fmt.Sprintf("%d", port))
+			continue
+		}
+		conn.Close()
+	}
+
+	if len(failed) > 0 {
+		return false, fmt.Sprintf("P2P ports unreachable: %s", strings.Join(failed, ", "))
+	}
+	return true, fmt.Sprintf("all P2P ports reachable: %v", portList)
+}
+
 func doCheckP2PPorts(target string, params map[string]any) (bool, string) {
 	chain := "ethereum"
 	if v, ok := params["chain"]; ok {
@@ -168,7 +216,6 @@ func doCheckP2PPorts(target string, params map[string]any) (bool, string) {
 			chain = s
 		}
 	}
-	// Port overrides (devnet ephemeral host ports); absent = standards.
 	elP2P, _ := params["elP2P"].(int)
 	if elP2P == 0 {
 		elP2P = 30303
@@ -182,36 +229,16 @@ func doCheckP2PPorts(target string, params map[string]any) (bool, string) {
 		cosmosP2P = 26656
 	}
 
-	var ports []int
-	switch strings.ToLower(chain) {
-	case "ethereum":
-		ports = []int{elP2P, clP2P}
-	case "cosmos":
-		ports = []int{cosmosP2P}
-	default:
-		ports = []int{elP2P, cosmosP2P, clP2P}
-	}
-
-	var failed []string
-	for _, port := range ports {
-		conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", target, port), 3*time.Second)
-		if err != nil {
-			failed = append(failed, fmt.Sprintf("%d", port))
-			continue
-		}
-		conn.Close()
-	}
-
-	if len(failed) > 0 {
-		return false, fmt.Sprintf("P2P ports unreachable: %s", strings.Join(failed, ", "))
-	}
-	return true, fmt.Sprintf("all P2P ports reachable: %v", ports)
+	return CheckP2PPorts(target, chain, map[string]int{
+		"elP2P":     elP2P,
+		"clP2P":     clP2P,
+		"cosmosP2P": cosmosP2P,
+	})
 }
 
-func doCheckStaticIP(target string, params map[string]any) (bool, string) {
-	// A DNS lookup cannot prove "static" (vs DHCP); this check verifies the
-	// target resolves to a routable IP. Loopback targets are skipped, not
-	// failed: a local run cannot assess the node's public reachability.
+// CheckStaticIP checks if the target resolves to a routable (non-loopback) IP.
+// This does not verify static assignment (DHCP vs static); that requires host/provider confirmation.
+func CheckStaticIP(target string) (bool, string) {
 	if target == "" || target == "127.0.0.1" || target == "localhost" || target == "::1" {
 		return true, "loopback target: public-IP check skipped (pass the node's public hostname to verify)"
 	}
@@ -221,9 +248,13 @@ func doCheckStaticIP(target string, params map[string]any) (bool, string) {
 	}
 
 	for _, ip := range ips {
-		if ip.To4() != nil && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() {
+		if !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() && !ip.IsUnspecified() {
 			return true, fmt.Sprintf("target resolves to routable IP: %s (static assignment not verifiable — confirm with your host/network provider)", ip.String())
 		}
 	}
 	return false, "no suitable routable IP found (only loopback/link-local)"
+}
+
+func doCheckStaticIP(target string, params map[string]any) (bool, string) {
+	return CheckStaticIP(target)
 }

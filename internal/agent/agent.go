@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/nodebeat/agent/internal/alloycfg"
@@ -398,7 +399,7 @@ func (r *Runner) Start(ctx context.Context) error {
 		return fmt.Errorf("start before prepare")
 	}
 	r.registry = prometheus.NewRegistry()
-	r.registry.MustRegister(prometheus.NewGoCollector())
+	r.registry.MustRegister(collectors.NewGoCollector())
 	r.registry.MustRegister(newStatsCollector(r.ChildrenStats))
 	info := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "nodebeat_agent_info",
@@ -450,22 +451,30 @@ func (r *Runner) Run(ctx context.Context) error {
 }
 
 // exporterArgs maps detection endpoints to the appropriate chain exporter flags.
+//
+// NOTE: the two exporters use different metrics flags: ethereum-metrics-exporter
+// takes --metrics-port <port>, while cosmos-validator-watcher serves its /metrics
+// on --http-addr :<port> (default :8080; we pin :9090 to match ExporterURL).
 func exporterArgs(det *detect.Result, port int) []string {
-	args := []string{"--metrics-port", strconv.Itoa(port)}
 	switch det.Chain {
-	case detect.ChainEthereum:
-		if u := firstURL(det, detect.KindELRPC); u != "" {
-			args = append(args, "--execution-url", u)
-		}
-		if u := firstURL(det, detect.KindCLBeacon); u != "" {
-			args = append(args, "--consensus-url", u)
-		}
 	case detect.ChainCosmos:
+		args := []string{"--http-addr", ":" + strconv.Itoa(port)}
 		if u := firstURL(det, detect.KindCosmosRPC); u != "" {
 			args = append(args, "--node", u)
 		}
+		return args
+	default: // ethereum (and unknown: same flags, detection decides)
+		args := []string{"--metrics-port", strconv.Itoa(port)}
+		if det.Chain == detect.ChainEthereum {
+			if u := firstURL(det, detect.KindELRPC); u != "" {
+				args = append(args, "--execution-url", u)
+			}
+			if u := firstURL(det, detect.KindCLBeacon); u != "" {
+				args = append(args, "--consensus-url", u)
+			}
+		}
+		return args
 	}
-	return args
 }
 
 func firstURL(det *detect.Result, kind string) string {

@@ -146,7 +146,8 @@ if [ -n "$CONTROL_PLANE" ]; then
   [ -n "$CHAIN" ] && ENROLL_CHAIN_FLAGS="--chain $CHAIN"
   echo "+ nodebeat-agent enroll --control-plane $CONTROL_PLANE --target $TARGET --state-dir /var/lib/nodebeat (token redacted)"
   # shellcheck disable=SC2086
-  sudo -u nodebeat env NODEBEAT_INGEST_TOKEN="$INGEST_TOKEN" \
+  # Token via exported env, not `env VAR=...` (that puts it in argv / ps).
+  NODEBEAT_INGEST_TOKEN="$INGEST_TOKEN" sudo --preserve-env=NODEBEAT_INGEST_TOKEN -u nodebeat \
     /usr/local/bin/nodebeat-agent enroll --control-plane "$CONTROL_PLANE" \
     --target "$TARGET" --state-dir /var/lib/nodebeat $ENROLL_CHAIN_FLAGS $PORT_FLAGS
   install -d -m 0755 -o root -g root "$(dirname "$DROPIN")"

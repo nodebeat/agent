@@ -71,6 +71,11 @@ func Save(stateDir string, e Enrollment) error {
 	if err := os.WriteFile(Path(stateDir), buf, 0o600); err != nil {
 		return fmt.Errorf("write enrollment: %w", err)
 	}
+	// WriteFile keeps the mode of a pre-existing file; force 0600 so a
+	// re-enroll over a loosely-permissioned file cannot leak the token.
+	if err := os.Chmod(Path(stateDir), 0o600); err != nil {
+		return fmt.Errorf("chmod enrollment: %w", err)
+	}
 	return nil
 }
 

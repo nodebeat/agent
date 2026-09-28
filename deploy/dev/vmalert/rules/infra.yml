@@ -61,7 +61,17 @@ groups:
             (chrony/systemd-timesyncd) and check for VM clock issues.
 
       - alert: NodeTelemetryStale
-        expr: time() - timestamp(node_uname_info) > 180
+        # Fires per instance known in the last 7d with no live sample
+        # (set difference on label sets). A powered-off agent stops
+        # remote-writing, so value/threshold expressions match nothing and
+        # the alert could never exist — absence must be queried, not
+        # measured. Deliberately timestamp-free: on VM v1.93
+        # timestamp(last_over_time(m[7d])) returns the query step grid, not
+        # the sample time, so age comparisons can never fire there.
+        # Self-resolves on recovery (live sample rejoins the right side).
+        # Trade-off: a deleted node keeps alerting until its series age out
+        # of the window (portal deletion does not scrub VM series).
+        expr: count by (instance) (last_over_time(node_uname_info[7d])) unless count by (instance) (node_uname_info)
         for: 0s
         labels:
           severity: warning

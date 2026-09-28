@@ -9,6 +9,8 @@ Type=simple
 User=nodebeat
 Group=nodebeat
 EnvironmentFile=/etc/nodebeat/agent.env
+# The ingest token is NOT passed as a flag (argv is world-readable via ps):
+# the agent reads NB_INGEST_TOKEN from this EnvironmentFile directly.
 # Port overrides (devnet ephemeral host ports). install.sh always writes every
 # NB_*_PORT (defaults = standards, metrics 0 = per-client default), so no
 # flag ever expands empty. Re-run install.sh after editing agent.env.
@@ -16,7 +18,6 @@ ExecStart=/usr/local/bin/nodebeat-agent run \
   --target ${NB_TARGET} \
   --remote-write-url ${NB_REMOTE_WRITE_URL} \
   --instance ${NB_INSTANCE} \
-  --ingest-token ${NB_INGEST_TOKEN} \
   --chain ${NB_CHAIN} \
   --el-rpc-port ${NB_EL_RPC_PORT} \
   --beacon-port ${NB_BEACON_PORT} \

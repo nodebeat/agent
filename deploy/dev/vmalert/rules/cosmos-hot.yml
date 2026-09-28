@@ -1,0 +1,56 @@
+# Hot path: Cosmos consensus-critical signals, evaluated every 5s, no
+# duration guards. Pages via the Alertmanager `paging` route (group_wait: 0s).
+#
+# Metric sources:
+#   cosmos_validator_watcher_* - kilnfi/cosmos-validator-watcher
+#     (prefix is `cosmos_validator_watcher_`; see
+#     docs/vendors/cosmos-validator-watcher/README.md)
+#   cometbft_* / tendermint_* - CometBFT native metrics on :26660 (the
+#     metric prefix depends on client version, so stall rules match both).
+groups:
+  - name: cosmos-hot
+    interval: 5s
+    rules:
+      - alert: CosmosValidatorJailed
+        expr: max by (instance) (cosmos_validator_watcher_is_jailed) == 1
+        for: 0s
+        labels:
+          severity: critical
+          chain: cosmos
+        annotations:
+          summary: "Cosmos validator is jailed ({{ $labels.instance }})"
+          description: >-
+            The tracked validator reports jailed=1. A jailed validator earns
+            nothing and risks tombstoning on further faults. Check downtime,
+            double-sign evidence, and unjail only after the cause is fixed.
+
+      # Detection budget ≈ window (60s) + eval (5s) + dispatch: ~70s
+      # fault-to-page, same design as the Ethereum head-stall rules.
+      - alert: CosmosHeadStalled
+        expr: |
+          (increase(cometbft_consensus_height[60s]) == 0)
+            or
+          (increase(tendermint_consensus_height[60s]) == 0)
+        for: 0s
+        labels:
+          severity: critical
+          chain: cosmos
+        annotations:
+          summary: "CometBFT height not advancing ({{ $labels.instance }})"
+          description: >-
+            No new CometBFT height in 60s. Chain stuck locally (peers lost,
+            app halted) or stalled globally. Value held at {{ $value }} new
+            heights/60s.
+
+      - alert: CosmosTelemetryStale
+        expr: time() - timestamp(cosmos_validator_watcher_block_height) > 180
+        for: 0s
+        labels:
+          severity: critical
+          chain: cosmos
+        annotations:
+          summary: "No Cosmos telemetry for 3m ({{ $labels.instance }})"
+          description: >-
+            Backstop for a dead watcher, dead agent, or broken remote-write:
+            nothing evaluable for this node. Cannot distinguish stuck chain
+            from blind monitoring without reference sources (Increment 2).
