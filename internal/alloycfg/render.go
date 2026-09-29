@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -25,12 +26,16 @@ import (
 type Options struct {
 	// RemoteWriteURL is the ingest endpoint, e.g.
 	// https://ingest:8428/api/v1/write. Required.
-	// SaaS ingest goes through the nginx proxy, which validates a per-node
-	// Bearer token (see nodetoken + /internal/ingest/verify). Pass it as
-	// IngestToken to render the authorization block; empty omits it
-	// (dev loopback without the proxy, never public).
 	RemoteWriteURL string
-	IngestToken    string
+	// IngestTokenFile is the file holding the per-node Bearer token the
+	// SaaS ingest proxy validates. Alloy reads it, so the rendered config
+	// holds no secret. Empty (and no IngestToken) omits the authorization
+	// block (standalone sinks without auth).
+	IngestTokenFile string
+	// IngestToken inlines the token instead. Only the control plane's
+	// server-rendered pipeline for older agents uses it; agents render
+	// with IngestTokenFile.
+	IngestToken string
 	// ExporterMetricsURL is the chain metrics endpoint on the agent host:
 	// the Ethereum poller (http://127.0.0.1:19090/chain/metrics) or the
 	// Cosmos watcher. Defaults to http://127.0.0.1:9090/metrics, which is
@@ -84,10 +89,9 @@ type pipeline struct {
 	Instance         string
 	Chain            string
 	TenantID         string
-	HasTenantID      bool
 	RemoteWriteURL   string
 	IngestToken      string
-	HasIngestToken   bool
+	IngestTokenFile  string
 	Hot              []staticTarget
 	Standard         []staticTarget
 	HotInterval      string
@@ -126,10 +130,9 @@ func Render(det *detect.Result, opts Options) (string, error) {
 		Instance:         instance,
 		Chain:            det.Chain,
 		TenantID:         opts.TenantID,
-		HasTenantID:      opts.TenantID != "",
 		RemoteWriteURL:   opts.RemoteWriteURL,
 		IngestToken:      opts.IngestToken,
-		HasIngestToken:   opts.IngestToken != "",
+		IngestTokenFile:  opts.IngestTokenFile,
 		HotInterval:      HotInterval,
 		HotTimeout:       HotTimeout,
 		StandardInterval: StandardInterval,
@@ -137,55 +140,59 @@ func Render(det *detect.Result, opts Options) (string, error) {
 		NodeJob:          "prometheus.scrape.node",
 	}
 
-	// Chain-agnostic: chain metrics (Ethereum poller or cosmos-validator-watcher)
-	duties := append(append([]label(nil), base...), label{Key: "role", Value: "duties"})
-	if det.Chain == detect.ChainEthereum {
-		duties = append(duties,
-			label{Key: "__scrape_interval__", Value: ChainPollInterval},
-			label{Key: "__scrape_timeout__", Value: ChainPollInterval})
+	// withRole returns a fresh label set: base + role + extra.
+	withRole := func(role string, extra ...label) []label {
+		ls := append(append([]label(nil), base...), label{Key: "role", Value: role})
+		return append(ls, extra...)
 	}
-	if t, err := targetFromURL(exporterURL, duties); err == nil {
-		p.Hot = append(p.Hot, t)
-	} else {
-		return "", fmt.Errorf("bad exporter metrics URL: %w", err)
+	add := func(dst *[]staticTarget, what, u string, labels []label) error {
+		t, err := targetFromURL(u, labels)
+		if err != nil {
+			return fmt.Errorf("bad %s URL %q: %w", what, u, err)
+		}
+		*dst = append(*dst, t)
+		return nil
 	}
 
-	if det.Chain == detect.ChainEthereum && opts.DutiesMetricsURL != "" {
-		t, err := targetFromURL(opts.DutiesMetricsURL, append(append([]label(nil), base...), label{Key: "role", Value: "validators"}))
-		if err != nil {
-			return "", fmt.Errorf("bad duties metrics URL: %w", err)
+	// Chain metrics (Ethereum poller or cosmos-validator-watcher). The
+	// Ethereum poller target is scraped at ChainPollInterval.
+	var chainExtra []label
+	if det.Chain == detect.ChainEthereum {
+		chainExtra = []label{
+			{Key: "__scrape_interval__", Value: ChainPollInterval},
+			{Key: "__scrape_timeout__", Value: ChainPollInterval},
 		}
-		p.Standard = append(p.Standard, t)
+	}
+	if err := add(&p.Hot, "exporter metrics", exporterURL, withRole("duties", chainExtra...)); err != nil {
+		return "", err
 	}
 
 	switch det.Chain {
 	case detect.ChainEthereum:
-		// Ethereum: CL metrics on hot path, EL metrics on standard path
-		for _, u := range det.MetricsURLs(detect.KindCLMetrics) {
-			t, err := targetFromURL(u, append(base, label{Key: "role", Value: "consensus"}))
-			if err != nil {
-				return "", fmt.Errorf("bad CL metrics URL %q: %w", u, err)
+		// Validator duties change once per epoch: standard path.
+		if opts.DutiesMetricsURL != "" {
+			if err := add(&p.Standard, "duties metrics", opts.DutiesMetricsURL, withRole("validators")); err != nil {
+				return "", err
 			}
-			p.Hot = append(p.Hot, t)
+		}
+		// CL metrics on the hot path, EL metrics on the standard path.
+		for _, u := range det.MetricsURLs(detect.KindCLMetrics) {
+			if err := add(&p.Hot, "CL metrics", u, withRole("consensus")); err != nil {
+				return "", err
+			}
 		}
 		for _, u := range det.MetricsURLs(detect.KindELMetrics) {
-			t, err := targetFromURL(u, append(base, label{Key: "role", Value: "execution"}))
-			if err != nil {
-				return "", fmt.Errorf("bad EL metrics URL %q: %w", u, err)
+			if err := add(&p.Standard, "EL metrics", u, withRole("execution")); err != nil {
+				return "", err
 			}
-			p.Standard = append(p.Standard, t)
 		}
 	case detect.ChainCosmos:
-		// Cosmos: CometBFT metrics on hot path (consensus-critical)
+		// CometBFT metrics are consensus-critical: hot path.
 		for _, u := range det.MetricsURLs(detect.KindCosmosMetrics) {
-			t, err := targetFromURL(u, append(base, label{Key: "role", Value: "consensus"}))
-			if err != nil {
-				return "", fmt.Errorf("bad CometBFT metrics URL %q: %w", u, err)
+			if err := add(&p.Hot, "CometBFT metrics", u, withRole("consensus")); err != nil {
+				return "", err
 			}
-			p.Hot = append(p.Hot, t)
 		}
-		// Cosmos RPC/REST don't have native metrics endpoints we scrape
-		// Standard path could include Cosmos REST metrics if needed
 	}
 
 	var sb strings.Builder
@@ -211,19 +218,14 @@ func targetFromURL(raw string, labels []label) (staticTarget, error) {
 	if path == "" {
 		path = "/metrics"
 	}
-	ls := make([]label, len(labels))
-	copy(ls, labels)
-	sort.Slice(ls, func(i, j int) bool { return ls[i].Key < ls[j].Key })
-	return staticTarget{Address: u.Host, Scheme: scheme, Path: path, Labels: ls}, nil
+	sort.Slice(labels, func(i, j int) bool { return labels[i].Key < labels[j].Key })
+	return staticTarget{Address: u.Host, Scheme: scheme, Path: path, Labels: labels}, nil
 }
 
-func alloyQuote(s string) string {
-	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`)
-	return `"` + r.Replace(s) + `"`
-}
-
+// Every interpolated value goes through q (strconv.Quote): Alloy string
+// literals use Go's escape syntax, so no value can break out of its string.
 var configTemplate = template.Must(template.New("config").Funcs(template.FuncMap{
-	"q": alloyQuote,
+	"q": strconv.Quote,
 }).Parse(`// Generated by nodebeat-agent for instance {{q .Instance}} ({{q .Chain}}). DO NOT EDIT.
 // Hot path (5s): consensus-critical metrics. Standard path (15s): execution.
 // Node path (15s): host metrics via the embedded node_exporter.
@@ -241,7 +243,12 @@ prometheus.remote_write "default" {
 		queue_config {
 			batch_send_deadline = "1s"
 		}
-{{- if .HasIngestToken}}
+{{- if .IngestTokenFile}}
+		authorization {
+			type             = "Bearer"
+			credentials_file = {{q .IngestTokenFile}}
+		}
+{{- else if .IngestToken}}
 		authorization {
 			type        = "Bearer"
 			credentials = {{q .IngestToken}}
@@ -286,7 +293,7 @@ discovery.relabel "node" {
 		target_label = "job"
 		replacement  = {{q .NodeJob}}
 	}
-{{- if .HasTenantID}}
+{{- if .TenantID}}
 
 	rule {
 		target_label = "tenant_id"

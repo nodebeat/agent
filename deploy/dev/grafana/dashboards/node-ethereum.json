@@ -1,9 +1,10 @@
 {
-  "uid": "nodebeat-node",
-  "title": "NodeBeat Node",
+  "uid": "nodebeat-node-ethereum",
+  "title": "NodeBeat Node: Ethereum",
   "tags": [
     "nodebeat",
-    "node"
+    "node",
+    "ethereum"
   ],
   "timezone": "browser",
   "schemaVersion": 39,
@@ -37,9 +38,9 @@
           "type": "prometheus",
           "uid": "victoriametrics"
         },
-        "definition": "label_values(up, instance)",
+        "definition": "label_values(up{chain=\"ethereum\"}, instance)",
         "query": {
-          "query": "label_values(up, instance)",
+          "query": "label_values(up{chain=\"ethereum\"}, instance)",
           "refId": "instance"
         },
         "includeAll": false,
@@ -918,126 +919,13 @@
       "description": "Own proposal slots judged in the last hour: proposed or missed. Every miss pages."
     },
     {
-      "id": 101,
-      "type": "row",
-      "title": "Chain: Cosmos",
-      "collapsed": false,
-      "gridPos": {
-        "x": 0,
-        "y": 31,
-        "w": 24,
-        "h": 1
-      },
-      "panels": []
-    },
-    {
-      "id": 20,
-      "type": "timeseries",
-      "title": "Block height",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "victoriametrics"
-      },
-      "gridPos": {
-        "x": 0,
-        "y": 32,
-        "w": 8,
-        "h": 7
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "victoriametrics"
-          },
-          "expr": "max(cometbft_consensus_height{instance=\"$instance\"}) or max(tendermint_consensus_height{instance=\"$instance\"})",
-          "refId": "A",
-          "legendFormat": "height"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      }
-    },
-    {
-      "id": 21,
-      "type": "timeseries",
-      "title": "Peers",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "victoriametrics"
-      },
-      "gridPos": {
-        "x": 8,
-        "y": 32,
-        "w": 8,
-        "h": 7
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "victoriametrics"
-          },
-          "expr": "max(cometbft_p2p_peers{instance=\"$instance\"}) or max(tendermint_p2p_peers{instance=\"$instance\"})",
-          "refId": "A",
-          "legendFormat": "peers"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      }
-    },
-    {
-      "id": 22,
-      "type": "timeseries",
-      "title": "Validator duties",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "victoriametrics"
-      },
-      "gridPos": {
-        "x": 16,
-        "y": 32,
-        "w": 8,
-        "h": 7
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "victoriametrics"
-          },
-          "expr": "max(cosmos_validator_watcher_consecutive_missed_blocks{instance=\"$instance\"})",
-          "refId": "A",
-          "legendFormat": "consecutive missed blocks"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "victoriametrics"
-          },
-          "expr": "max(cosmos_validator_watcher_is_jailed{instance=\"$instance\"})",
-          "refId": "B",
-          "legendFormat": "jailed"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      },
-      "description": "From cosmos-validator-watcher. Voting power: cosmos_validator_watcher_tokens."
-    },
-    {
       "id": 102,
       "type": "row",
       "title": "Host",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 39,
+        "y": 31,
         "w": 24,
         "h": 1
       },
@@ -1053,7 +941,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 40,
+        "y": 32,
         "w": 6,
         "h": 7
       },
@@ -1085,7 +973,7 @@
       },
       "gridPos": {
         "x": 6,
-        "y": 40,
+        "y": 32,
         "w": 6,
         "h": 7
       },
@@ -1117,7 +1005,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 40,
+        "y": 32,
         "w": 6,
         "h": 7
       },
@@ -1149,7 +1037,7 @@
       },
       "gridPos": {
         "x": 18,
-        "y": 40,
+        "y": 32,
         "w": 6,
         "h": 7
       },
@@ -1187,7 +1075,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 47,
+        "y": 39,
         "w": 24,
         "h": 1
       },
@@ -1203,7 +1091,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 48,
+        "y": 40,
         "w": 12,
         "h": 7
       },
@@ -1233,7 +1121,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 48,
+        "y": 40,
         "w": 12,
         "h": 7
       },
@@ -1264,7 +1152,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 55,
+        "y": 47,
         "w": 8,
         "h": 8
       },
@@ -1297,7 +1185,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 55,
+        "y": 47,
         "w": 8,
         "h": 8
       },
@@ -1330,7 +1218,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 55,
+        "y": 47,
         "w": 8,
         "h": 8
       },
@@ -1362,7 +1250,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 63,
+        "y": 55,
         "w": 16,
         "h": 9
       },
@@ -1587,7 +1475,7 @@
                 "value": [
                   {
                     "title": "Latency percentiles for this method",
-                    "url": "/d/nodebeat-node/nodebeat-node?${__url_time_range}&var-instance=${instance}&var-method=${__value.raw}"
+                    "url": "/d/nodebeat-node-ethereum/nodebeat-node-ethereum?${__url_time_range}&var-instance=${instance}&var-method=${__value.raw}"
                   }
                 ]
               }
@@ -1617,7 +1505,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 63,
+        "y": 55,
         "w": 8,
         "h": 9
       },

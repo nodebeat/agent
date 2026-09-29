@@ -63,7 +63,7 @@ type Config struct {
 	ExecutionURL string
 	Interval     time.Duration
 	Timeout      time.Duration
-	// Validators (indices or 0x pubkeys, see ParseValidators) turns on
+	// Validators (indices or 0x pubkeys, see ParseValidator) turns on
 	// duty tracking; needs BeaconURL. Served by DutiesHandler.
 	Validators []string
 	// Client overrides the HTTP client (tests). It must not set Timeout:

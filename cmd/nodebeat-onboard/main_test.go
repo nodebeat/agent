@@ -95,46 +95,38 @@ func TestCheckNTP(t *testing.T) {
 }
 
 func TestCheckP2PPorts(t *testing.T) {
-	// Start a test listener on a random port to simulate a reachable port
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer l.Close()
-	_, portStr, _ := net.SplitHostPort(l.Addr().String())
-	var port int
-	fmt.Sscanf(portStr, "%d", &port)
+	port := l.Addr().(*net.TCPAddr).Port
 
-	// Test ethereum with both ports reachable (use same port for both)
-	ok, msg := CheckP2PPorts("127.0.0.1", "ethereum", map[string]int{"elP2P": port, "clP2P": port})
-	if !ok {
+	if ok, msg := CheckP2PPorts("127.0.0.1", []int{port, port}); !ok {
 		t.Errorf("reachable ports should pass: %s", msg)
 	}
-	t.Logf("p2p check (ethereum reachable): %s", msg)
+	ok, msg := CheckP2PPorts("127.0.0.1", []int{port, 1})
+	if ok || !strings.Contains(msg, "unreachable: 1") {
+		t.Errorf("an unreachable port should fail and be named: %v %s", ok, msg)
+	}
+}
 
-	// Test unreachable ports
-	ok, msg = CheckP2PPorts("127.0.0.1", "ethereum", map[string]int{"elP2P": 1, "clP2P": 2})
-	if ok {
-		t.Errorf("unreachable ports should fail")
+func TestP2PPortsPerChain(t *testing.T) {
+	p := detect.DefaultPorts()
+	if got := fmt.Sprint(p2pPorts(detect.ChainEthereum, p)); got != "[30303 9000]" {
+		t.Errorf("ethereum p2p ports = %s", got)
 	}
-	if !strings.Contains(msg, "unreachable") {
-		t.Errorf("fail message should mention unreachable: %s", msg)
+	if got := fmt.Sprint(p2pPorts(detect.ChainCosmos, p)); got != "[26656]" {
+		t.Errorf("cosmos p2p ports = %s", got)
 	}
-	t.Logf("p2p check (unreachable): %s", msg)
+}
 
-	// Test cosmos chain with reachable port
-	ok, msg = CheckP2PPorts("127.0.0.1", "cosmos", map[string]int{"cosmosP2P": port})
-	if !ok {
-		t.Errorf("cosmos with reachable port should pass: %s", msg)
+func TestIsLocal(t *testing.T) {
+	for target, want := range map[string]bool{"": true, "127.0.0.1": true, "localhost": true, "::1": true, "192.168.1.100": false, "node.example": false} {
+		if got := isLocal(target); got != want {
+			t.Errorf("isLocal(%q) = %v, want %v", target, got, want)
+		}
 	}
-	t.Logf("p2p check (cosmos): %s", msg)
-
-	// Test cosmos with unreachable port
-	ok, msg = CheckP2PPorts("127.0.0.1", "cosmos", map[string]int{"cosmosP2P": 1})
-	if ok {
-		t.Errorf("cosmos unreachable should fail")
-	}
-	t.Logf("p2p check (cosmos unreachable): %s", msg)
 }
 
 func TestCheckStaticIP(t *testing.T) {
@@ -157,102 +149,6 @@ func TestCheckStaticIP(t *testing.T) {
 	// We just verify it doesn't panic
 	ok, msg = CheckStaticIP("google.com")
 	t.Logf("static ip (google.com): ok=%v msg=%s", ok, msg)
-}
-
-func TestDoCheckDiskSpace(t *testing.T) {
-	// Test the wrapper that matches OnboardCheck.Check signature
-	ok, msg := doCheckDiskSpace("127.0.0.1", map[string]any{"threshold": 0.1})
-	if !ok {
-		t.Errorf("doCheckDiskSpace should pass: %s", msg)
-	}
-
-	ok, msg = doCheckDiskSpace("192.168.1.100", map[string]any{"threshold": 0.1})
-	if !ok {
-		t.Errorf("doCheckDiskSpace remote should pass: %s", msg)
-	}
-	if !strings.Contains(msg, "local host only") {
-		t.Errorf("remote check should mention local host only: %s", msg)
-	}
-}
-
-func TestDoCheckNTP(t *testing.T) {
-	fakeCommands(t, map[string]string{
-		"systemctl is-active systemd-timesyncd": "active\n",
-		"timedatectl timesync-status":           "Offset: +300ms\n",
-	})
-	// --ntp-threshold reaches the check through params.
-	if ok, msg := doCheckNTP("127.0.0.1", map[string]any{"threshold": 0.1}); ok {
-		t.Errorf("0.1s threshold should fail a 300ms offset: %s", msg)
-	}
-	if ok, msg := doCheckNTP("127.0.0.1", map[string]any{"threshold": 1.0}); !ok {
-		t.Errorf("1s threshold should pass a 300ms offset: %s", msg)
-	}
-	if _, msg := doCheckNTP("192.168.1.100", nil); !strings.Contains(msg, "remote NTP not checked") {
-		t.Errorf("remote check should say remote NTP not checked: %s", msg)
-	}
-}
-
-func TestDoCheckP2PPorts(t *testing.T) {
-	// Start a test listener
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	_, portStr, _ := net.SplitHostPort(l.Addr().String())
-	var port int
-	fmt.Sscanf(portStr, "%d", &port)
-
-	ok, msg := doCheckP2PPorts("127.0.0.1", map[string]any{"chain": "ethereum", "elP2P": port, "clP2P": port})
-	if !ok {
-		t.Errorf("doCheckP2PPorts ethereum should pass: %s", msg)
-	}
-
-	ok, msg = doCheckP2PPorts("127.0.0.1", map[string]any{"chain": "cosmos", "cosmosP2P": port})
-	if !ok {
-		t.Errorf("doCheckP2PPorts cosmos should pass: %s", msg)
-	}
-
-	// Test with defaults (port 0 means use default) - should fail unless defaults happen to be open
-	ok, msg = doCheckP2PPorts("127.0.0.1", map[string]any{"chain": "ethereum", "elP2P": 0, "clP2P": 0})
-	// Should fail with default ports (30303, 9000) unless those happen to be open
-	t.Logf("doCheckP2PPorts defaults: ok=%v msg=%s", ok, msg)
-}
-
-func TestDoCheckStaticIP(t *testing.T) {
-	ok, msg := doCheckStaticIP("127.0.0.1", nil)
-	if !ok {
-		t.Errorf("doCheckStaticIP loopback should pass: %s", msg)
-	}
-
-	ok, msg = doCheckStaticIP("google.com", nil)
-	t.Logf("doCheckStaticIP google.com: ok=%v msg=%s", ok, msg)
-}
-
-// Integration test: run the full onboarding flow with default flags
-func TestOnboardIntegration(t *testing.T) {
-	// This test runs the actual main() logic but with a short timeout
-	// We can't easily capture stdout from main, so we test the check functions directly
-	// The integration is tested manually via `make e2e` which runs onboarding
-
-	// Verify all check functions exist and are callable
-	checks := []struct {
-		name string
-		fn   func(string, map[string]any) (bool, string)
-	}{
-		{"disk", doCheckDiskSpace},
-		{"ntp", doCheckNTP},
-		{"p2p", doCheckP2PPorts},
-		{"static-ip", doCheckStaticIP},
-	}
-
-	for _, c := range checks {
-		ok, msg := c.fn("127.0.0.1", nil)
-		t.Logf("check %s: ok=%v msg=%s", c.name, ok, msg)
-		if msg == "" {
-			t.Errorf("check %s returned empty message", c.name)
-		}
-	}
 }
 
 // Test that Ports.WithDefaults fills in expected defaults

@@ -47,22 +47,6 @@ func TestIdentifyCL(t *testing.T) {
 	}
 }
 
-func TestIdentifyCosmos(t *testing.T) {
-	cases := map[string]string{
-		"cometbft/1.0.0":       "cometbft",
-		"tendermint/0.34.0":    "tendermint",
-		"CometBFT/v1.0.0":      "cometbft",
-		"Tendermint/v0.34.0":   "tendermint",
-		"":                     "",
-		"UnknownClient/v9.9.9": "",
-	}
-	for in, want := range cases {
-		if got := IdentifyCosmos(in); got != want {
-			t.Errorf("IdentifyCosmos(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
 func portOf(t *testing.T, raw string) int {
 	t.Helper()
 	u, err := url.Parse(raw)
@@ -186,19 +170,10 @@ func TestDetectFullNode(t *testing.T) {
 	clM := metricsServer(t, "/metrics")
 	defer clM.Close()
 
-	res, err := detectWith(context.Background(), "127.0.0.1",
-		Ports{ELRPC: portOf(t, rpc.URL), Beacon: portOf(t, beacon.URL)}, "",
-		map[string]metricsEndpoint{
-			"geth": {Port: portOf(t, elM.URL), Path: "/debug/metrics/prometheus"},
-		},
-		map[string]metricsEndpoint{
-			"lighthouse": {Port: portOf(t, clM.URL), Path: "/metrics"},
-		},
-		nil,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	res, err := Detect(context.Background(), "127.0.0.1", Ports{
+		ELRPC: portOf(t, rpc.URL), Beacon: portOf(t, beacon.URL),
+		ELMetrics: portOf(t, elM.URL), CLMetrics: portOf(t, clM.URL),
+	}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,14 +199,8 @@ func TestDetectELOnlyMetricsClosed(t *testing.T) {
 	rpc := rpcServer(t, "Reth/v1.1.0/x86_64-unknown-linux-gnu")
 	defer rpc.Close()
 
-	res, err := detectWith(context.Background(), "127.0.0.1",
-		Ports{ELRPC: portOf(t, rpc.URL), Beacon: freePort(t)}, "",
-		map[string]metricsEndpoint{
-			"reth": {Port: freePort(t), Path: "/metrics"},
-		},
-		nil,
-		nil,
-	)
+	res, err := Detect(context.Background(), "127.0.0.1",
+		Ports{ELRPC: portOf(t, rpc.URL), Beacon: freePort(t), ELMetrics: freePort(t)}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,12 +223,8 @@ func TestDetectUnknownClientsStillRecorded(t *testing.T) {
 	beacon := beaconServer(t, "MysteryClient/v9.9.9")
 	defer beacon.Close()
 
-	res, err := detectWith(context.Background(), "127.0.0.1",
-		Ports{ELRPC: freePort(t), Beacon: portOf(t, beacon.URL)}, "",
-		nil,
-		nil,
-		nil,
-	)
+	res, err := Detect(context.Background(), "127.0.0.1",
+		Ports{ELRPC: freePort(t), Beacon: portOf(t, beacon.URL), CosmosRPC: freePort(t)}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,12 +264,12 @@ func TestDetectMetricsPortOverride(t *testing.T) {
 	clM := metricsServer(t, "/metrics")
 	defer clM.Close()
 
-	res, err := DetectWithPorts(context.Background(), "127.0.0.1", Ports{
+	res, err := Detect(context.Background(), "127.0.0.1", Ports{
 		ELRPC:     portOf(t, rpc.URL),
 		Beacon:    portOf(t, beacon.URL),
 		ELMetrics: portOf(t, elM.URL),
 		CLMetrics: portOf(t, clM.URL),
-	})
+	}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +292,7 @@ func TestDetectChainFilter(t *testing.T) {
 		CosmosRPC: portOf(t, cosmosRPC.URL), CosmosREST: freePort(t),
 	}
 
-	eth, err := DetectFiltered(context.Background(), "127.0.0.1", ports, ChainEthereum)
+	eth, err := Detect(context.Background(), "127.0.0.1", ports, ChainEthereum)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +305,7 @@ func TestDetectChainFilter(t *testing.T) {
 		}
 	}
 
-	cosmos, err := DetectFiltered(context.Background(), "127.0.0.1", ports, ChainCosmos)
+	cosmos, err := Detect(context.Background(), "127.0.0.1", ports, ChainCosmos)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,19 +318,15 @@ func TestDetectChainFilter(t *testing.T) {
 		}
 	}
 
-	if _, err := DetectFiltered(context.Background(), "127.0.0.1",
+	if _, err := Detect(context.Background(), "127.0.0.1",
 		Ports{ELRPC: freePort(t), CosmosRPC: freePort(t)}, ChainEthereum); err == nil {
 		t.Error("expected error filtering ethereum on empty host, got nil")
 	}
 }
 
 func TestDetectNothing(t *testing.T) {
-	_, err := detectWith(context.Background(), "127.0.0.1",
-		Ports{ELRPC: freePort(t), Beacon: freePort(t)}, "",
-		nil,
-		nil,
-		nil,
-	)
+	_, err := Detect(context.Background(), "127.0.0.1",
+		Ports{ELRPC: freePort(t), Beacon: freePort(t), CosmosRPC: freePort(t)}, "")
 	if err == nil {
 		t.Error("expected error when nothing is detected, got nil")
 	}
@@ -379,18 +340,13 @@ func TestDetectCosmosFullNode(t *testing.T) {
 	cosmosM := metricsServer(t, "/metrics")
 	defer cosmosM.Close()
 
-	res, err := detectWith(context.Background(), "127.0.0.1",
-		Ports{
-			CosmosRPC:  portOf(t, cosmosRPC.URL),
-			CosmosREST: portOf(t, cosmosREST.URL),
-		},
-		"",
-		nil,
-		nil,
-		map[string]metricsEndpoint{
-			"cometbft": {Port: portOf(t, cosmosM.URL), Path: "/metrics"},
-		},
-	)
+	res, err := Detect(context.Background(), "127.0.0.1", Ports{
+		ELRPC:         freePort(t),
+		Beacon:        freePort(t),
+		CosmosRPC:     portOf(t, cosmosRPC.URL),
+		CosmosREST:    portOf(t, cosmosREST.URL),
+		CosmosMetrics: portOf(t, cosmosM.URL),
+	}, ChainCosmos)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,17 +371,12 @@ func TestDetectCosmosBareVersionProbesMetrics(t *testing.T) {
 	cosmosM := metricsServer(t, "/metrics")
 	defer cosmosM.Close()
 
-	res, err := detectWith(context.Background(), "127.0.0.1",
+	res, err := Detect(context.Background(), "127.0.0.1",
 		Ports{
 			CosmosRPC:     portOf(t, cosmosRPC.URL),
 			CosmosREST:    freePort(t),
 			CosmosMetrics: portOf(t, cosmosM.URL),
-		},
-		"",
-		nil,
-		nil,
-		nil,
-	)
+		}, ChainCosmos)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,13 +394,8 @@ func TestDetectCosmosRPCOnly(t *testing.T) {
 	cosmosRPC := cometBFTRPCServer(t, "tendermint/0.34.0")
 	defer cosmosRPC.Close()
 
-	res, err := detectWith(context.Background(), "127.0.0.1",
-		Ports{CosmosRPC: portOf(t, cosmosRPC.URL), CosmosREST: freePort(t)},
-		"",
-		nil,
-		nil,
-		nil,
-	)
+	res, err := Detect(context.Background(), "127.0.0.1",
+		Ports{CosmosRPC: portOf(t, cosmosRPC.URL), CosmosREST: freePort(t)}, ChainCosmos)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -474,17 +420,12 @@ func TestDetectCosmosTendermintProbesMetrics(t *testing.T) {
 	cosmosM := metricsServer(t, "/metrics")
 	defer cosmosM.Close()
 
-	res, err := detectWith(context.Background(), "127.0.0.1",
+	res, err := Detect(context.Background(), "127.0.0.1",
 		Ports{
 			CosmosRPC:     portOf(t, cosmosRPC.URL),
 			CosmosREST:    freePort(t),
 			CosmosMetrics: portOf(t, cosmosM.URL),
-		},
-		"",
-		nil,
-		nil,
-		nil,
-	)
+		}, ChainCosmos)
 	if err != nil {
 		t.Fatal(err)
 	}

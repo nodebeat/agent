@@ -1,0 +1,10 @@
+# Third-party binaries install.sh downloads. The hashes are ours: this file
+# ships inside the signed release, so cosign covers what gets installed.
+# archive_sha256 is checked before extracting; binary_sha256 is checked
+# after, and again on re-runs to skip the download when $LIB already has it.
+# Bump: edit version, URLs and both hashes (verify the archive against the
+# upstream SHA256SUMS), run make rules-test + e2e, release.
+#
+# name version arch  archive_sha256                                                   binary_sha256                                                    member            url
+alloy  1.19.2  amd64 3694ea4e1044b367e1c21ffe28117f209c5989fa5e604d000321809f871ab701 ab3c386101f54ce030b38195cb7bb9abd4e663727895837a3a8a31422ebc0644 alloy-linux-amd64 https://github.com/grafana/alloy/releases/download/v1.19.2/alloy-linux-amd64.zip
+alloy  1.19.2  arm64 fbeaf099b7c90b8b83dfa4781601c1181d8d06e89af34b846680c86ce08f725c b082aec98f45f86a93cddfedb7a3edb337f2cc2a5c63d9bd45d23184de6ee887 alloy-linux-arm64 https://github.com/grafana/alloy/releases/download/v1.19.2/alloy-linux-arm64.zip

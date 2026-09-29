@@ -182,3 +182,47 @@ func TestGivesUpWhenChildCannotStart(t *testing.T) {
 		t.Fatalf("Run() = %v, want give-up error (log:\n%s)", err, log.String())
 	}
 }
+
+// A child that ignores SIGTERM is killed once StopGrace has passed.
+func TestKillsChildIgnoringSIGTERM(t *testing.T) {
+	log := &memLogger{}
+	opts := testOpts()
+	opts.StopGrace = 200 * time.Millisecond
+	sup := New(log, opts, Child{Name: "stubborn", Path: "/bin/sh",
+		Args: []string{"-c", `trap "" TERM; echo ready; while :; do sleep 1; done`}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- sup.Run(ctx) }()
+	waitFor(t, 5*time.Second, "child running", func() bool {
+		return strings.Contains(log.String(), "[stubborn] ready")
+	})
+
+	start := time.Now()
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected clean shutdown, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("supervisor did not kill a child ignoring SIGTERM")
+	}
+	if d := time.Since(start); d < opts.StopGrace {
+		t.Errorf("stopped after %s, before the %s grace period", d, opts.StopGrace)
+	}
+}
+
+// Children never inherit the ingest token from the agent's environment.
+func TestChildEnvDropsIngestToken(t *testing.T) {
+	t.Setenv("NB_INGEST_TOKEN", "secret-a")
+	t.Setenv("NODEBEAT_INGEST_TOKEN", "secret-b")
+	t.Setenv("NB_KEEP", "kept")
+	env := strings.Join(childEnv(), "\n")
+	if strings.Contains(env, "secret-") {
+		t.Errorf("ingest token leaked into child env")
+	}
+	if !strings.Contains(env, "NB_KEEP=kept") {
+		t.Errorf("unrelated variable dropped from child env")
+	}
+}

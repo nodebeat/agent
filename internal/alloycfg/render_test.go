@@ -130,6 +130,14 @@ func TestRenderGolden(t *testing.T) {
 				IngestToken:    "nb_ingest_TESTTOKEN0123456789abcdef",
 			},
 		},
+		{
+			name: "full_with_token_file",
+			det:  fullDetection(),
+			opts: Options{
+				RemoteWriteURL:  "https://ingest.example:8428/api/v1/write",
+				IngestTokenFile: "/var/lib/nodebeat/ingest-token",
+			},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

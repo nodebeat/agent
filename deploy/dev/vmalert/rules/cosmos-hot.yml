@@ -20,27 +20,37 @@ groups:
     params:
       latency_offset: ["2s"]
     rules:
+      # One alert per jailed validator (address = hex consensus address from
+      # the watcher): a node may track several, and the page must say which.
       - alert: CosmosValidatorJailed
-        expr: max by (instance) (cosmos_validator_watcher_is_jailed) == 1
+        expr: max by (instance, address) (cosmos_validator_watcher_is_jailed) == 1
         for: 0s
         labels:
           severity: critical
           component: consensus
           chain: cosmos
         annotations:
-          summary: "Cosmos validator is jailed ({{ $labels.instance }})"
+          summary: "Cosmos validator {{ $labels.address }} is jailed ({{ $labels.instance }})"
           description: >-
-            The tracked validator reports jailed=1. A jailed validator earns
+            Validator {{ $labels.address }} reports jailed=1. A jailed validator earns
             nothing and risks tombstoning on further faults. Check downtime,
             double-sign evidence, and unjail only after the cause is fixed.
 
       # Detection budget ≈ window (60s) + backend (~9s): ~70s fault-to-page,
       # same design as the Ethereum head-stall rules.
+      # The watcher's height is the signal that survives a hung node: its
+      # native :26660 endpoint stops answering (height series just end, so
+      # increase() has nothing to evaluate), while the watcher, running in
+      # the agent, keeps serving its last height. One alert per instance.
       - alert: CosmosHeadStalled
         expr: |
-          (increase(cometbft_consensus_height[60s]) == 0)
-            or
-          (increase(tendermint_consensus_height[60s]) == 0)
+          max by (instance) (
+            (increase(cometbft_consensus_height[60s]) == 0)
+              or
+            (increase(tendermint_consensus_height[60s]) == 0)
+              or
+            (increase(cosmos_validator_watcher_block_height[60s]) == 0)
+          )
         for: 0s
         labels:
           severity: critical

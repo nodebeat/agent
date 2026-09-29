@@ -38,7 +38,7 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "count(count by (instance) (up == 1)) or vector(0)",
+          "expr": "count(count by (instance) (up)) or vector(0)",
           "refId": "A",
           "instant": true,
           "range": false
@@ -91,7 +91,7 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "count(((count by (instance) (last_over_time(up[7d])) unless count by (instance) (up)) or (count by (instance) (up == 0)))) or vector(0)",
+          "expr": "count(count by (instance) (last_over_time(up[7d])) unless count by (instance) (up)) or vector(0)",
           "refId": "A",
           "instant": true,
           "range": false
@@ -449,7 +449,7 @@
                 "value": [
                   {
                     "title": "Open node detail",
-                    "url": "/d/nodebeat-node/nodebeat-node?${__url_time_range}&var-instance=${__value.raw}"
+                    "url": "/d/nodebeat-node-${__data.fields.Chain}/node?${__url_time_range}&var-instance=${__value.raw}"
                   }
                 ]
               }

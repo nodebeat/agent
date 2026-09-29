@@ -3,35 +3,41 @@ package enroll
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/nodebeat/agent/internal/detect"
 )
 
+// server answers every call with resp (as JSON) and records the request.
+func server(t *testing.T, resp any, auth, body *string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth != nil {
+			*auth = r.Header.Get("Authorization")
+		}
+		if body != nil {
+			b, _ := io.ReadAll(r.Body)
+			*body = string(b)
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 func TestActivate(t *testing.T) {
 	var gotAuth, gotBody string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
-		var body ActivateRequest
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decode body: %v", err)
-		}
-		raw, _ := json.Marshal(body)
-		gotBody = string(raw)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ActivateResponse{
-			NodeID: "node-1", NodeName: "n1", TenantID: "org_1",
-			RemoteWriteURL: "https://ingest/w", AlloyConfig: "config{}",
-		})
-	}))
-	defer srv.Close()
+	srv := server(t, map[string]string{
+		"node_id": "node-1", "node_name": "n1", "tenant_id": "org_1",
+		"remote_write_url": "https://ingest/w", "alloy_config": "ignored{}",
+	}, &gotAuth, &gotBody)
 
-	c := NewClient(srv.URL, "nb_ingest_x", "")
-	out, err := c.Activate(context.Background(), ActivateRequest{
+	out, err := NewClient(srv.URL, "nb_ingest_x").Activate(context.Background(), ActivateRequest{
 		Chain: "ethereum", ELClient: "geth", Hostname: "h1",
 		Endpoints: []detect.Endpoint{{Kind: detect.KindELRPC, URL: "http://127.0.0.1:8545"}},
 	})
@@ -42,12 +48,21 @@ func TestActivate(t *testing.T) {
 		t.Errorf("auth = %q, want Bearer nb_ingest_x", gotAuth)
 	}
 	for _, want := range []string{`"chain":"ethereum"`, `"hostname":"h1"`, `"kind":"el-rpc"`} {
-		if !contains(gotBody, want) {
+		if !strings.Contains(gotBody, want) {
 			t.Errorf("body %s missing %s", gotBody, want)
 		}
 	}
-	if out.NodeID != "node-1" || out.AlloyConfig != "config{}" {
+	if out != (NodeParams{NodeID: "node-1", NodeName: "n1", TenantID: "org_1", RemoteWriteURL: "https://ingest/w"}) {
 		t.Errorf("unexpected response: %+v", out)
+	}
+}
+
+func TestActivateRejectsBadRemoteWriteURL(t *testing.T) {
+	for _, rw := range []string{"", "ftp://ingest/w", "https://user:pw@ingest/w", "/relative"} {
+		srv := server(t, map[string]string{"node_id": "n", "node_name": "n", "remote_write_url": rw}, nil, nil)
+		if _, err := NewClient(srv.URL, "t").Activate(context.Background(), ActivateRequest{Chain: "ethereum"}); err == nil {
+			t.Errorf("remote-write URL %q accepted", rw)
+		}
 	}
 }
 
@@ -57,65 +72,70 @@ func TestActivateError(t *testing.T) {
 		w.Write([]byte(`{"error":"node not activated"}`))
 	}))
 	defer srv.Close()
+	_, err := NewClient(srv.URL, "bad").Activate(context.Background(), ActivateRequest{Chain: "ethereum"})
+	if err == nil || !strings.Contains(err.Error(), "403") || !strings.Contains(err.Error(), "node not activated") {
+		t.Errorf("err = %v, want HTTP 403 with the server message", err)
+	}
+}
 
-	c := NewClient(srv.URL, "bad", "")
-	if _, err := c.Activate(context.Background(), ActivateRequest{Chain: "ethereum"}); err == nil {
-		t.Error("expected error on 403, got nil")
+func TestRedirectNotFollowed(t *testing.T) {
+	var leaked bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { leaked = true }))
+	defer target.Close()
+	srv := httptest.NewServer(http.RedirectHandler(target.URL+"/api/v1/nodes/n1/config", http.StatusFound))
+	defer srv.Close()
+	if _, err := NewClient(srv.URL, "tok").Heartbeat(context.Background(), "n1"); err == nil || leaked {
+		t.Errorf("redirect followed (leaked=%v, err=%v)", leaked, err)
 	}
 }
 
 func TestSaveLoadRoundtrip(t *testing.T) {
 	dir := t.TempDir()
-	e := Enrollment{ControlPlane: "https://cp", NodeID: "n1", IngestToken: "nb_ingest_x"}
+	e := Enrollment{ControlPlane: "https://cp", NodeID: "n1", RemoteWriteURL: "https://ingest/w", Chain: "cosmos"}
 	if err := Save(dir, e); err != nil {
 		t.Fatal(err)
 	}
-	if fi, err := os.Stat(filepath.Join(dir, Filename)); err != nil || fi.Mode().Perm() != 0o600 {
-		t.Errorf("enrollment not 0600: %v %v", fi, err)
-	}
 	got, err := Load(dir)
-	if err != nil {
+	if err != nil || got != e {
+		t.Fatalf("roundtrip = %+v, %v", got, err)
+	}
+	if err := SaveToken(dir, "nb_ingest_x\n"); err != nil {
 		t.Fatal(err)
 	}
-	if got.NodeID != "n1" || got.IngestToken != "nb_ingest_x" {
-		t.Errorf("roundtrip mismatch: %+v", got)
+	for _, p := range []string{Path(dir), TokenPath(dir)} {
+		if fi, err := os.Stat(p); err != nil || fi.Mode().Perm() != 0o600 {
+			t.Errorf("%s not 0600: %v %v", p, fi, err)
+		}
 	}
-	if tok, _ := got.DaemonToken(); tok != "nb_ingest_x" {
-		t.Errorf("DaemonToken = %q", tok)
+	if raw, _ := os.ReadFile(Path(dir)); strings.Contains(string(raw), "nb_ingest") {
+		t.Errorf("enrollment.json must not hold the token: %s", raw)
+	}
+	if tok, err := LoadToken(dir); err != nil || tok != "nb_ingest_x" {
+		t.Errorf("LoadToken = %q, %v", tok, err)
+	}
+	if tok, err := LoadToken(t.TempDir()); err != nil || tok != "" {
+		t.Errorf("missing token file = %q, %v; want empty, nil", tok, err)
+	}
+	if err := SaveToken(dir, "two words"); err == nil {
+		t.Error("token with whitespace accepted")
 	}
 }
 
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (func() bool {
-		for i := 0; i+len(sub) <= len(s); i++ {
-			if s[i:i+len(sub)] == sub {
-				return true
-			}
-		}
-		return false
-	})()
+// Old enrollments (token inside enrollment.json, no remote-write URL
+// pinned) must be re-enrolled, not half-loaded.
+func TestLoadRejectsIncomplete(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(Path(dir), []byte(`{"control_plane":"https://cp","node_id":"n1","ingest_token":"x"}`), 0o600)
+	if _, err := Load(dir); err == nil {
+		t.Error("incomplete enrollment loaded")
+	}
 }
 
-// FetchConfig forwards the agent's exporter URL so the server renders the
-// port the exporter actually runs on; empty sends no query (server default).
-func TestFetchConfigSendsExporterURL(t *testing.T) {
-	var got, duties []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got = append(got, r.URL.Query().Get("exporter_url"))
-		duties = append(duties, r.URL.Query().Get("duties_url"))
-		_ = json.NewEncoder(w).Encode(NodeConfig{NodeID: "n1", AlloyConfig: "cfg"})
-	}))
-	defer srv.Close()
-	c := NewClient(srv.URL, "tok", "")
-	for _, u := range []string{"http://127.0.0.1:9091/metrics", ""} {
-		if _, err := c.FetchConfig(context.Background(), "n1", u, u); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if len(got) != 2 || got[0] != "http://127.0.0.1:9091/metrics" || got[1] != "" {
-		t.Fatalf("exporter_url sent = %q", got)
-	}
-	if len(duties) != 2 || duties[0] != "http://127.0.0.1:9091/metrics" || duties[1] != "" {
-		t.Fatalf("duties_url sent = %q", duties)
+func TestHeartbeat(t *testing.T) {
+	var gotAuth string
+	srv := server(t, map[string]string{"node_id": "n1", "node_name": "renamed", "remote_write_url": "https://ingest/w"}, &gotAuth, nil)
+	p, err := NewClient(srv.URL, "tok").Heartbeat(context.Background(), "n1")
+	if err != nil || p.NodeName != "renamed" || gotAuth != "Bearer tok" {
+		t.Errorf("Heartbeat = %+v, %v (auth %q)", p, err, gotAuth)
 	}
 }

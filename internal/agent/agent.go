@@ -12,7 +12,6 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -57,15 +56,20 @@ const (
 type Config struct {
 	Target         string
 	RemoteWriteURL string
-	Instance       string
-	// IngestToken renders the remote_write Bearer block (standalone agents
-	// writing through the auth-enforcing ingest proxy). Empty omits it.
-	IngestToken      string
+	// Instance labels every series; default Target. Enrolled agents use the
+	// portal node name and follow renames via SetInstance.
+	Instance string
+	// TenantID stamps tenant_id on every series (enrolled agents; the
+	// ingest proxy enforces the tenant from the token regardless).
+	TenantID string
+	// IngestTokenFile holds the remote_write Bearer token; Alloy reads it,
+	// so config.alloy holds no secret. Empty = no auth block.
+	IngestTokenFile  string
 	ExporterBin      string // Cosmos only; default "cosmos-validator-watcher"
 	AlloyBin         string // default "alloy"
 	ExporterPort     int    // Cosmos watcher port; default 9090
 	ExporterURL      string // chain metrics URL; default per chain, see ChainMetricsURL
-	StateDir         string // default ".nodebeat"; the only writable path
+	StateDir         string // default ".nodebeat", made absolute; the only writable path
 	MetricsAddr      string // default "127.0.0.1:19090" (localhost only)
 	AlloyUIAddr      string // default "127.0.0.1:12345" (localhost only)
 	DisableReporting bool   // pass --disable-reporting to Alloy
@@ -95,6 +99,11 @@ func (c Config) withDefaults() Config {
 	}
 	if c.StateDir == "" {
 		c.StateDir = ".nodebeat"
+	}
+	// Absolute: children run with the state dir as working directory and
+	// get paths inside it as arguments.
+	if abs, err := filepath.Abs(c.StateDir); err == nil {
+		c.StateDir = abs
 	}
 	if c.MetricsAddr == "" {
 		c.MetricsAddr = "127.0.0.1:19090"
@@ -180,11 +189,15 @@ type Manifest struct {
 type Runner struct {
 	cfg Config
 	log *log.Logger
-	// mu guards det, children, manifest and sup: Reload/ApplyRemoteConfig
-	// (SIGHUP goroutine, enrolled poll loop) race with Run/Start and the
-	// diagnostics server. Take the lock for every access, never across
-	// disk/network IO.
+	// writeMu serializes apply, the only writer of the pipeline files.
+	writeMu sync.Mutex
+	// mu guards instance, det, children, manifest, sup and the poller
+	// fields: Reload (SIGHUP goroutine) and SetInstance (enrolled heartbeat
+	// loop) race with Start and the diagnostics server. Take the lock for
+	// every access, never across disk/network IO. cfg is only written by
+	// fixChildren, before Start.
 	mu       sync.RWMutex
+	instance string
 	det      *detect.Result
 	children []supervise.Child
 	manifest Manifest
@@ -202,7 +215,8 @@ func New(cfg Config, logger *log.Logger) *Runner {
 	if logger == nil {
 		logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
-	return &Runner{cfg: cfg.withDefaults(), log: logger}
+	cfg = cfg.withDefaults()
+	return &Runner{cfg: cfg, instance: cfg.Instance, log: logger}
 }
 
 // ChildrenStats returns supervisor stats, or nil before Start.
@@ -237,93 +251,94 @@ func (r *Runner) ManifestPath() string {
 // dir (config.alloy 0600 plus manifest.json). Nothing is written outside the
 // state dir.
 func (r *Runner) Prepare(ctx context.Context) error {
-	dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	det, err := detect.DetectFiltered(dctx, r.cfg.Target, r.cfg.Ports, r.cfg.Chain)
+	det, err := r.detect(ctx)
 	if err != nil {
 		return err
 	}
 	return r.materialize(det)
 }
 
-// materialize writes config + manifest + child specs for an already-known
-// detection. Split from Prepare so tests can run it without network access.
+func (r *Runner) detect(ctx context.Context) (*detect.Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	return detect.Detect(ctx, r.cfg.Target, r.cfg.Ports, r.cfg.Chain)
+}
+
+// materialize renders and writes the pipeline for det. Split from Prepare
+// so tests can run it without network access.
 func (r *Runner) materialize(det *detect.Result) error {
-	if err := r.normalizeValidators(det); err != nil {
-		return err
+	_, err := r.apply(det)
+	return err
+}
+
+// apply is the only writer of the pipeline: it renders the Alloy config for
+// det locally (never from the network), then writes config.alloy (0600) and
+// manifest.json and commits det + manifest in memory. Disk first: a failed
+// write leaves the previous in-memory state untouched, so a later reload
+// can still recover. changed reports whether config.alloy differs from
+// what was there before. Callers are serialized by writeMu.
+func (r *Runner) apply(det *detect.Result) (changed bool, err error) {
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
+	if err := r.fixChildren(det); err != nil {
+		return false, err
 	}
+	r.mu.RLock()
+	instance, children := r.instance, r.children
+	r.mu.RUnlock()
 	rendered, err := alloycfg.Render(det, alloycfg.Options{
 		RemoteWriteURL:     r.cfg.RemoteWriteURL,
+		IngestTokenFile:    r.cfg.IngestTokenFile,
 		ExporterMetricsURL: r.chainMetricsURL(det),
 		DutiesMetricsURL:   ChainDutiesURL(det.Chain, r.cfg.MetricsAddr, r.cfg.Validators),
-		Instance:           r.cfg.Instance,
-		IngestToken:        r.cfg.IngestToken,
+		Instance:           instance,
+		TenantID:           r.cfg.TenantID,
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
-	return r.materializeWithConfig(det, rendered)
+	if err := os.MkdirAll(r.cfg.StateDir, 0o750); err != nil {
+		return false, fmt.Errorf("create state dir: %w", err)
+	}
+	before, _ := os.ReadFile(r.ConfigPath())
+	if err := os.WriteFile(r.ConfigPath(), []byte(rendered), 0o600); err != nil {
+		return false, fmt.Errorf("write alloy config: %w", err)
+	}
+	manifest := buildManifest(det, r.cfg, instance, r.chainMetricsURL(det), children)
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	if err := os.WriteFile(r.ManifestPath(), manifestJSON, 0o644); err != nil {
+		return false, fmt.Errorf("write manifest: %w", err)
+	}
+	r.mu.Lock()
+	r.det = det
+	r.manifest = manifest
+	r.mu.Unlock()
+	r.log.Printf("agent: detected el=%s cl=%s on %s; wrote %s",
+		det.ELClient, det.CLClient, det.Target, r.ConfigPath())
+	return string(before) != rendered, nil
 }
 
-// PrepareRemote writes a server-rendered Alloy pipeline (from `enroll` +
-// GET /nodes/:id/config) instead of rendering locally. The exporter child is
-// still resolved and supervised from the stored detection.
-func (r *Runner) PrepareRemote(det *detect.Result, alloyConfig string) error {
-	if alloyConfig == "" {
-		return fmt.Errorf("empty remote alloy config")
+// fixChildren runs once, on the first prepare: it normalizes --validators
+// for the detected chain and resolves the child processes. Both stay fixed
+// for the life of the Runner (an Alloy reload cannot change a child's
+// binary or args), so r.cfg is never written after this.
+func (r *Runner) fixChildren(det *detect.Result) error {
+	r.mu.RLock()
+	done := r.children != nil
+	r.mu.RUnlock()
+	if done {
+		return nil
 	}
-	if err := r.normalizeValidators(det); err != nil {
-		return err
-	}
-	return r.materializeWithConfig(det, alloyConfig)
-}
-
-// normalizeValidators checks --validators against the detected chain and
-// stores the collector form (idempotent across reloads).
-func (r *Runner) normalizeValidators(det *detect.Result) error {
 	vals, err := NormalizeValidators(det.Chain, r.cfg.Validators)
 	if err != nil {
 		return fmt.Errorf("--validators: %w", err)
 	}
-	r.mu.Lock()
-	r.cfg.Validators = vals
-	r.mu.Unlock()
-	return nil
-}
 
-// ApplyRemoteConfig rewrites config.alloy when the server pipeline changed
-// and SIGHUPs Alloy. Used by the `run --enrolled` poll loop (which doubles
-// as a heartbeat).
-func (r *Runner) ApplyRemoteConfig(alloyConfig string) error {
-	r.mu.RLock()
-	sup := r.sup
-	r.mu.RUnlock()
-	if sup == nil {
-		return fmt.Errorf("apply before start")
-	}
-	if alloyConfig == "" {
-		return fmt.Errorf("empty remote alloy config")
-	}
-	before, err := os.ReadFile(r.ConfigPath())
-	if err != nil {
-		return err
-	}
-	if string(before) == alloyConfig {
-		return nil
-	}
-	if err := os.WriteFile(r.ConfigPath(), []byte(alloyConfig), 0o600); err != nil {
-		return fmt.Errorf("write alloy config: %w", err)
-	}
-	r.log.Print("agent: remote pipeline changed, signaling alloy to reload")
-	return sup.Signal(ChildAlloy, syscall.SIGHUP)
-}
-
-// materializeWithConfig writes config + manifest + child specs for det using
-// an already-rendered Alloy pipeline.
-func (r *Runner) materializeWithConfig(det *detect.Result, rendered string) error {
+	var children []supervise.Child
 	// Ethereum is polled in-process; only Cosmos runs a child exporter.
-	exporterBin := ""
-	var exporterArgList []string
 	if det.Chain == detect.ChainCosmos {
 		name := r.cfg.ExporterBin
 		if name == "" {
@@ -333,20 +348,13 @@ func (r *Runner) materializeWithConfig(det *detect.Result, rendered string) erro
 		if err != nil {
 			return fmt.Errorf("exporter binary %q: %w", name, err)
 		}
-		exporterBin, exporterArgList = bin, exporterArgs(det, r.cfg.ExporterPort, r.cfg.Validators)
+		children = append(children, supervise.Child{Name: ChildExporter, Path: bin,
+			Args: exporterArgs(det, r.cfg.ExporterPort, vals), Dir: r.cfg.StateDir})
 	}
 	alloyBin, err := exec.LookPath(r.cfg.AlloyBin)
 	if err != nil {
 		return fmt.Errorf("alloy binary %q: %w", r.cfg.AlloyBin, err)
 	}
-	if err := os.MkdirAll(r.cfg.StateDir, 0o750); err != nil {
-		return fmt.Errorf("create state dir: %w", err)
-	}
-
-	if err := os.WriteFile(r.ConfigPath(), []byte(rendered), 0o600); err != nil {
-		return fmt.Errorf("write alloy config: %w", err)
-	}
-
 	alloyArgs := []string{
 		"run",
 		"--storage.path=" + filepath.Join(r.cfg.StateDir, "alloy-wal"),
@@ -356,30 +364,12 @@ func (r *Runner) materializeWithConfig(det *detect.Result, rendered string) erro
 		alloyArgs = append(alloyArgs, "--disable-reporting")
 	}
 	alloyArgs = append(alloyArgs, r.ConfigPath())
-
-	var children []supervise.Child
-	if exporterBin != "" {
-		children = append(children, supervise.Child{Name: ChildExporter, Path: exporterBin, Args: exporterArgList, Dir: r.cfg.StateDir})
-	}
 	children = append(children, supervise.Child{Name: ChildAlloy, Path: alloyBin, Args: alloyArgs, Dir: r.cfg.StateDir})
-	manifest := buildManifest(det, r.cfg, r.chainMetricsURL(det), exporterBin, exporterArgList)
-	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return err
-	}
-	// Disk first, then a single atomic in-memory commit: a failed write
-	// leaves the previous state untouched (no partial mutation, so a later
-	// reload can still recover).
-	if err := os.WriteFile(r.ManifestPath(), manifestJSON, 0o644); err != nil {
-		return fmt.Errorf("write manifest: %w", err)
-	}
+
+	r.cfg.Validators = vals
 	r.mu.Lock()
-	r.det = det
 	r.children = children
-	r.manifest = manifest
 	r.mu.Unlock()
-	r.log.Printf("agent: detected el=%s cl=%s on %s; wrote %s",
-		det.ELClient, det.CLClient, det.Target, r.ConfigPath())
 	return nil
 }
 
@@ -393,9 +383,7 @@ func (r *Runner) Reload(ctx context.Context) error {
 	if sup == nil {
 		return fmt.Errorf("reload before start")
 	}
-	dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	det, err := detect.DetectFiltered(dctx, r.cfg.Target, r.cfg.Ports, r.cfg.Chain)
+	det, err := r.detect(ctx)
 	if err != nil {
 		return err
 	}
@@ -403,82 +391,72 @@ func (r *Runner) Reload(ctx context.Context) error {
 }
 
 // applyDetection rewrites config + manifest for det and SIGHUPs Alloy when
-// the pipeline changed. Split from Reload so tests can drive it directly.
+// the pipeline changed. Children are fixed (see fixChildren), so a chain
+// switch needs an agent restart; the in-process poller has no such limit and
+// is replaced when the endpoints move.
 func (r *Runner) applyDetection(det *detect.Result) error {
-	before, err := os.ReadFile(r.ConfigPath())
+	r.mu.RLock()
+	prev := r.det
+	r.mu.RUnlock()
+	if prev != nil && det.Chain != prev.Chain {
+		return fmt.Errorf("agent: chain changed %q -> %q; restart the agent", prev.Chain, det.Chain)
+	}
+	changed, err := r.apply(det)
 	if err != nil {
 		return err
 	}
-	r.mu.RLock()
-	prevDet := r.det
-	prevChildren := r.children
-	prevManifest := r.manifest
-	sup := r.sup
-	r.mu.RUnlock()
-	// Detect chain switch: exporter binary depends on chain. A live switch
-	// (ethereum <-> cosmos) requires a full agent restart — Alloy reload
-	// cannot change the exporter child binary/args.
-	if prevDet != nil && det.Chain != "" && prevDet.Chain != "" && det.Chain != prevDet.Chain {
-		return fmt.Errorf("agent: chain changed %q -> %q; restart the agent", prevDet.Chain, det.Chain)
-	}
-	// On materialize failure the previous in-memory state is untouched
-	// (disk-first commit), so just return the error: the next reload can
-	// still recover.
-	if err := r.materialize(det); err != nil {
-		return err
-	}
-	// Child processes are stable across reloads: keep the original supervised
-	// specs (exporter args, alloy bin) and only reload Alloy config via SIGHUP.
-	// materialize updated r.manifest + r.det; restore children but keep the
-	// new config on disk. Manifest's exporter field is reverted to match the
-	// actually-running child. The in-process poller has no such limit: it is
-	// replaced so it follows the new endpoints.
-	r.mu.Lock()
-	r.children = prevChildren
-	// Revert manifest exporter to reflect the still-running child, but keep
-	// chain/target and scrape jobs from the new detection.
-	runningExporter := ""
-	for _, c := range prevChildren {
-		if c.Name == ChildExporter {
-			runningExporter = c.Path + " " + strings.Join(c.Args, " ")
-			break
-		}
-	}
-	switch {
-	case runningExporter != "":
-		r.manifest.Exporter = runningExporter
-	case det.Chain != detect.ChainEthereum:
-		r.manifest = prevManifest
-	}
-	manifest := r.manifest
-	r.mu.Unlock()
-	if det.Chain == detect.ChainEthereum && !sameEndpoints(prevDet, det) {
+	if det.Chain == detect.ChainEthereum && !sameEndpoints(prev, det) {
 		r.startPoller(det)
 	}
-	// Persist the reverted manifest.
-	if b, err := json.MarshalIndent(manifest, "", "  "); err == nil {
-		_ = os.WriteFile(r.ManifestPath(), b, 0o644)
+	return r.reloadAlloy(changed)
+}
+
+// SetInstance changes the instance label (an enrolled node renamed in the
+// portal) and reloads Alloy when the pipeline changed.
+func (r *Runner) SetInstance(name string) error {
+	r.mu.Lock()
+	same := name == "" || name == r.instance
+	if !same {
+		r.instance = name
 	}
-	after, err := os.ReadFile(r.ConfigPath())
+	det := r.det
+	r.mu.Unlock()
+	if same || det == nil { // not prepared yet: Prepare renders the new name
+		return nil
+	}
+	r.log.Printf("agent: instance renamed to %q", name)
+	changed, err := r.apply(det)
 	if err != nil {
 		return err
 	}
-	if bytes.Equal(before, after) {
-		r.log.Print("agent: reload found no changes")
+	return r.reloadAlloy(changed)
+}
+
+// reloadAlloy SIGHUPs Alloy after a config change (nothing to do before
+// Start: Alloy reads the file when it starts).
+func (r *Runner) reloadAlloy(changed bool) error {
+	r.mu.RLock()
+	sup := r.sup
+	r.mu.RUnlock()
+	if !changed {
+		r.log.Print("agent: pipeline unchanged")
+		return nil
+	}
+	if sup == nil {
 		return nil
 	}
 	r.log.Print("agent: pipeline changed, signaling alloy to reload")
 	return sup.Signal(ChildAlloy, syscall.SIGHUP)
 }
 
-// Start launches the children and serves /metrics + /manifest until ctx ends.
-// Prepare must have run first.
+// Start launches the children and serves the read-only diagnostics
+// (/metrics, /manifest and the poller's series) on MetricsAddr until ctx
+// ends. Prepare must have run first.
 func (r *Runner) Start(ctx context.Context) error {
 	r.mu.RLock()
-	children := r.children
-	det := r.det
+	children, det := r.children, r.det
 	r.mu.RUnlock()
-	if len(children) == 0 {
+	if len(children) == 0 || det == nil {
 		return fmt.Errorf("start before prepare")
 	}
 	r.registry = prometheus.NewRegistry()
@@ -505,29 +483,25 @@ func (r *Runner) Start(ctx context.Context) error {
 		r.startPoller(det)
 	}
 
+	// pollerHandler serves one of the current poller's handlers (the poller
+	// is replaced on reloads), or 404 when there is none.
+	pollerHandler := func(h func(*ethpoll.Poller) http.Handler) http.HandlerFunc {
+		return func(w http.ResponseWriter, req *http.Request) {
+			r.mu.RLock()
+			p := r.poller
+			r.mu.RUnlock()
+			if p == nil || h(p) == nil {
+				http.NotFound(w, req)
+				return
+			}
+			h(p).ServeHTTP(w, req)
+		}
+	}
 	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.HandlerFor(r.registry, promhttp.HandlerOpts{}))
-	mux.HandleFunc(ChainMetricsPath, func(w http.ResponseWriter, req *http.Request) {
-		r.mu.RLock()
-		p := r.poller
-		r.mu.RUnlock()
-		if p == nil {
-			http.NotFound(w, req)
-			return
-		}
-		p.Handler().ServeHTTP(w, req)
-	})
-	mux.HandleFunc(ChainDutiesPath, func(w http.ResponseWriter, req *http.Request) {
-		r.mu.RLock()
-		p := r.poller
-		r.mu.RUnlock()
-		if p == nil || p.DutiesHandler() == nil {
-			http.NotFound(w, req)
-			return
-		}
-		p.DutiesHandler().ServeHTTP(w, req)
-	})
-	mux.HandleFunc("/manifest", func(w http.ResponseWriter, req *http.Request) {
+	mux.Handle("GET /metrics", promhttp.HandlerFor(r.registry, promhttp.HandlerOpts{}))
+	mux.Handle("GET "+ChainMetricsPath, pollerHandler((*ethpoll.Poller).Handler))
+	mux.Handle("GET "+ChainDutiesPath, pollerHandler((*ethpoll.Poller).DutiesHandler))
+	mux.HandleFunc("GET /manifest", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(r.Manifest())
 	})
@@ -615,13 +589,9 @@ func firstURL(det *detect.Result, kind string) string {
 	return ""
 }
 
-func buildManifest(det *detect.Result, cfg Config, chainURL, exporterBin string, exporterArgs []string) Manifest {
-	// Manifest target must match the Prometheus instance label (cfg.Instance,
-	// defaulting to the detection target), not the raw target IP.
-	target := cfg.Instance
-	if target == "" {
-		target = det.Target
-	}
+// buildManifest describes the pipeline for det. Its target is the
+// instance label, not the raw target IP.
+func buildManifest(det *detect.Result, cfg Config, instance, chainURL string, children []supervise.Child) Manifest {
 	hot := []string{chainURL}
 	for _, e := range det.Endpoints {
 		if e.Kind == detect.KindCLMetrics || e.Kind == detect.KindCosmosMetrics {
@@ -637,7 +607,7 @@ func buildManifest(det *detect.Result, cfg Config, chainURL, exporterBin string,
 			standard = append(standard, e.URL)
 		}
 	}
-	exporter := strings.Join(append([]string{exporterBin}, exporterArgs...), " ")
+	var exporter string
 	var calls []string
 	if det.Chain == detect.ChainEthereum {
 		exporter = fmt.Sprintf("built-in ethpoll (beacon=%s execution=%s, every %s)",
@@ -647,10 +617,15 @@ func buildManifest(det *detect.Result, cfg Config, chainURL, exporterBin string,
 			calls = append(append([]string(nil), calls...), ethpoll.DutyCalls...)
 		}
 	}
+	for _, c := range children {
+		if c.Name == ChildExporter {
+			exporter = strings.Join(append([]string{c.Path}, c.Args...), " ")
+		}
+	}
 	return Manifest{
 		AgentVersion:   version.Version,
 		GeneratedAt:    time.Now().UTC(),
-		Target:         target,
+		Target:         instance,
 		Chain:          det.Chain,
 		ELClient:       det.ELClient,
 		CLClient:       det.CLClient,

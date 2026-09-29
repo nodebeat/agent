@@ -55,25 +55,13 @@ var DutyCalls = []string{
 
 var pubkeyRe = regexp.MustCompile(`^0x[0-9a-fA-F]{96}$`)
 
-// ParseValidators splits a comma/space separated list of validator indices
-// and 0x-prefixed BLS pubkeys, dropping duplicates.
-func ParseValidators(s string) ([]string, error) {
-	var out []string
-	seen := map[string]bool{}
-	for _, v := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' || r == '\n' || r == '\t' }) {
-		if _, err := strconv.ParseUint(v, 10, 64); err != nil && !pubkeyRe.MatchString(v) {
-			return nil, fmt.Errorf("validator %q: want an index or a 0x-prefixed 48-byte pubkey", v)
-		}
-		v = strings.ToLower(v)
-		if !seen[v] {
-			seen[v] = true
-			out = append(out, v)
-		}
+// ParseValidator checks one validator id, an index or a 0x-prefixed BLS
+// pubkey, and returns it in canonical (lower-case) form.
+func ParseValidator(v string) (string, error) {
+	if _, err := strconv.ParseUint(v, 10, 64); err != nil && !pubkeyRe.MatchString(v) {
+		return "", errors.New("want an index or a 0x-prefixed 48-byte pubkey")
 	}
-	if len(out) > MaxValidators {
-		return nil, fmt.Errorf("%d validators: at most %d per agent", len(out), MaxValidators)
-	}
-	return out, nil
+	return strings.ToLower(v), nil
 }
 
 type validator struct {

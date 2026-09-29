@@ -18,41 +18,44 @@ func SplitValidators(s string) []string {
 }
 
 // NormalizeValidators validates the configured validators for chain and
-// returns them in the form the collector takes:
-//   - ethereum: indices or 0x pubkeys (ethpoll.ParseValidators)
+// returns them deduplicated, in the form the collector takes:
+//   - ethereum: indices or 0x pubkeys (ethpoll.ParseValidator)
 //   - cosmos: consensus addresses as 40 upper-case hex characters, the form
 //     cosmos-validator-watcher --validator and CometBFT /validators use;
 //     bech32 consensus addresses (cosmosvalcons1..., osmovalcons1...) are
 //     converted. Operator addresses (valoper) are not accepted: mapping them
 //     needs the staking module's consensus pubkey.
 //
-// Idempotent, so reloads can re-run it on already-normalized values.
+// Idempotent, so it can re-run on already-normalized values.
 func NormalizeValidators(chain string, raw []string) ([]string, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
+	var parse func(string) (string, error)
 	switch chain {
 	case detect.ChainEthereum:
-		return ethpoll.ParseValidators(strings.Join(raw, ","))
+		parse = ethpoll.ParseValidator
 	case detect.ChainCosmos:
-		var out []string
-		seen := map[string]bool{}
-		for _, v := range raw {
-			addr, err := cosmosConsensusAddress(v)
-			if err != nil {
-				return nil, fmt.Errorf("validator %q: %w", v, err)
-			}
-			if !seen[addr] {
-				seen[addr] = true
-				out = append(out, addr)
-			}
-		}
-		if len(out) > ethpoll.MaxValidators {
-			return nil, fmt.Errorf("%d validators: at most %d per agent", len(out), ethpoll.MaxValidators)
-		}
-		return out, nil
+		parse = cosmosConsensusAddress
+	default:
+		return nil, fmt.Errorf("--validators is not supported for chain %q", chain)
 	}
-	return nil, fmt.Errorf("--validators is not supported for chain %q", chain)
+	var out []string
+	seen := map[string]bool{}
+	for _, v := range raw {
+		id, err := parse(v)
+		if err != nil {
+			return nil, fmt.Errorf("validator %q: %w", v, err)
+		}
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	if len(out) > ethpoll.MaxValidators {
+		return nil, fmt.Errorf("%d validators: at most %d per agent", len(out), ethpoll.MaxValidators)
+	}
+	return out, nil
 }
 
 func cosmosConsensusAddress(v string) (string, error) {

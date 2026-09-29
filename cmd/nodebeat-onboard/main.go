@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -16,13 +15,9 @@ import (
 	"github.com/nodebeat/agent/internal/detect"
 )
 
-type OnboardCheck struct {
-	Name     string
-	Required bool
-	Check    func(target string, params map[string]any) (bool, string)
-	Params   map[string]any
-}
-
+// Pre-flight checks for a node host. Everything here is read-only: statfs,
+// `systemctl is-active` + the time daemon's status command, TCP connects to
+// the P2P ports, a DNS lookup, and the same read-only probes as `detect`.
 func main() {
 	var (
 		target         = flag.String("target", "127.0.0.1", "target host to check")
@@ -32,92 +27,89 @@ func main() {
 		ntpThreshold   = flag.Float64("ntp-threshold", 1.0, "max NTP offset in seconds")
 		checkP2P       = flag.Bool("check-p2p", true, "check P2P ports")
 		checkStaticIP  = flag.Bool("check-static-ip", true, "check target resolves to a routable (non-loopback) IP")
-		chain          = flag.String("chain", "ethereum", "chain type: ethereum or cosmos")
-		verbose        = flag.Bool("v", false, "verbose output")
+		chainFlag      = flag.String("chain", "ethereum", "chain type: ethereum or cosmos")
 		nonInteractive = flag.Bool("non-interactive", false, "exit with code 1 on any failure")
 	)
 	var ports detect.Ports
 	detect.BindPortFlags(flag.CommandLine, &ports)
 	flag.Parse()
 
-	if *verbose {
-		log.SetFlags(log.LstdFlags | log.Lshortfile)
-	}
 	ports = ports.WithDefaults()
-	chainName, err := detect.ParseChainFilter(*chain)
-	if err != nil || chainName == "" {
-		fmt.Fprintf(os.Stderr, "onboard: --chain must be ethereum or cosmos, got %q\n", *chain)
+	chain, err := detect.ParseChainFilter(*chainFlag)
+	if err != nil || chain == "" {
+		fmt.Fprintf(os.Stderr, "onboard: --chain must be ethereum or cosmos, got %q\n", *chainFlag)
 		os.Exit(2)
 	}
-	*chain = chainName
+	remote := !isLocal(*target)
 
-	checks := []OnboardCheck{
-		{Name: "disk", Required: *checkDisk, Check: doCheckDiskSpace, Params: map[string]any{"threshold": *diskThreshold}},
-		{Name: "ntp", Required: *checkNTP, Check: doCheckNTP, Params: map[string]any{"threshold": *ntpThreshold}},
-		{Name: "p2p", Required: *checkP2P, Check: doCheckP2PPorts, Params: map[string]any{"chain": *chain, "elP2P": ports.ELP2P, "clP2P": ports.CLP2P, "cosmosP2P": ports.CosmosP2P}},
-		{Name: "static-ip", Required: *checkStaticIP, Check: doCheckStaticIP, Params: nil},
+	checks := []struct {
+		name    string
+		enabled bool
+		run     func() (bool, string)
+	}{
+		{"disk", *checkDisk, func() (bool, string) { return CheckDiskSpace(*diskThreshold, remote) }},
+		{"ntp", *checkNTP, func() (bool, string) { return CheckNTP(ntpServices, *ntpThreshold, remote) }},
+		{"p2p", *checkP2P, func() (bool, string) { return CheckP2PPorts(*target, p2pPorts(chain, ports)) }},
+		{"static-ip", *checkStaticIP, func() (bool, string) { return CheckStaticIP(*target) }},
 	}
 
-	passed := 0
-	failed := 0
-
+	passed, failed := 0, 0
 	fmt.Println("=== NodeBeat Node Onboarding Checks ===")
 	fmt.Printf("Target: %s\n", *target)
-	fmt.Printf("Chain: %s\n", *chain)
+	fmt.Printf("Chain: %s\n", chain)
 	fmt.Println()
-
-	for _, check := range checks {
-		if !check.Required {
-			fmt.Printf("  [%s] SKIPPED\n", check.Name)
+	for _, c := range checks {
+		if !c.enabled {
+			fmt.Printf("  [%s] SKIPPED\n", c.name)
 			continue
 		}
-
-		fmt.Printf("  [%s] ", check.Name)
-		ok, msg := check.Check(*target, check.Params)
-		if ok {
-			fmt.Printf("PASS - %s\n", msg)
+		if ok, msg := c.run(); ok {
+			fmt.Printf("  [%s] PASS - %s\n", c.name, msg)
 			passed++
 		} else {
-			fmt.Printf("FAIL - %s\n", msg)
+			fmt.Printf("  [%s] FAIL - %s\n", c.name, msg)
 			failed++
 		}
 	}
 
-	// Chain-specific detection
-	if *chain == "cosmos" {
-		fmt.Println()
-		fmt.Println("=== Cosmos Detection ===")
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		det, err := detect.DetectFiltered(ctx, *target, ports, detect.ChainCosmos)
-		if err != nil {
-			fmt.Printf("  [cosmos-detect] FAIL - %v\n", err)
-			failed++
-		} else {
-			fmt.Printf("  [cosmos-detect] PASS - chain=%s cl=%s endpoints=%d\n",
-				det.Chain, det.CLClient, len(det.Endpoints))
-		}
+	// Chain detection, restricted to the requested family.
+	label := map[string]string{detect.ChainEthereum: "eth-detect", detect.ChainCosmos: "cosmos-detect"}[chain]
+	fmt.Println()
+	fmt.Printf("=== %s%s Detection ===\n", strings.ToUpper(chain[:1]), chain[1:])
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	det, err := detect.Detect(ctx, *target, ports, chain)
+	cancel()
+	if err != nil {
+		fmt.Printf("  [%s] FAIL - %v\n", label, err)
+		failed++
 	} else {
-		fmt.Println()
-		fmt.Println("=== Ethereum Detection ===")
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		det, err := detect.DetectFiltered(ctx, *target, ports, detect.ChainEthereum)
-		if err != nil {
-			fmt.Printf("  [eth-detect] FAIL - %v\n", err)
-			failed++
-		} else {
-			fmt.Printf("  [eth-detect] PASS - chain=%s el=%s cl=%s endpoints=%d\n",
-				det.Chain, det.ELClient, det.CLClient, len(det.Endpoints))
-		}
+		fmt.Printf("  [%s] PASS - chain=%s el=%s cl=%s endpoints=%d\n",
+			label, det.Chain, det.ELClient, det.CLClient, len(det.Endpoints))
 	}
 
 	fmt.Println()
 	fmt.Printf("=== Summary: %d passed, %d failed ===\n", passed, failed)
-
 	if *nonInteractive && failed > 0 {
 		os.Exit(1)
 	}
+}
+
+// isLocal reports whether target is this host. Disk and NTP checks always
+// run locally; for a remote target their result says so.
+func isLocal(target string) bool {
+	switch target {
+	case "", "127.0.0.1", "localhost", "::1":
+		return true
+	}
+	return false
+}
+
+// p2pPorts are the P2P ports the chain's clients must expose.
+func p2pPorts(chain string, p detect.Ports) []int {
+	if chain == detect.ChainCosmos {
+		return []int{p.CosmosP2P}
+	}
+	return []int{p.ELP2P, p.CLP2P}
 }
 
 // CheckDiskSpace checks if the root filesystem has enough free space.
@@ -140,18 +132,6 @@ func CheckDiskSpace(threshold float64, isRemote bool) (bool, string) {
 		return false, fmt.Sprintf("disk free %.1f%% (threshold %.1f%%)%s", pct, threshold, suffix)
 	}
 	return true, fmt.Sprintf("disk free %.1f%% (threshold %.1f%%)%s", pct, threshold, suffix)
-}
-
-func doCheckDiskSpace(target string, params map[string]any) (bool, string) {
-	threshold := 15.0
-	if v, ok := params["threshold"]; ok {
-		if f, ok := v.(float64); ok {
-			threshold = f
-		}
-	}
-
-	isRemote := target != "" && target != "127.0.0.1" && target != "localhost" && target != "::1"
-	return CheckDiskSpace(threshold, isRemote)
 }
 
 // runCommand runs a local command and returns stdout (swapped in tests).
@@ -261,79 +241,30 @@ func CheckNTP(services []string, threshold float64, isRemote bool) (bool, string
 	return false, "no NTP service found running (ntp/chronyd/systemd-timesyncd)"
 }
 
-func doCheckNTP(target string, params map[string]any) (bool, string) {
-	services := []string{"ntp", "chronyd", "systemd-timesyncd"}
-	threshold := 1.0
-	if v, ok := params["threshold"]; ok {
-		if f, ok := v.(float64); ok {
-			threshold = f
-		}
-	}
-	isRemote := target != "" && target != "127.0.0.1" && target != "localhost" && target != "::1"
-	return CheckNTP(services, threshold, isRemote)
-}
+// ntpServices are the time daemons CheckNTP looks for, in order.
+var ntpServices = []string{"ntp", "chronyd", "systemd-timesyncd"}
 
-// CheckP2PPorts checks if the required P2P ports are reachable on the target.
-// chain specifies the chain type ("ethereum" or "cosmos").
-// ports is a map of port names to port numbers (elP2P, clP2P, cosmosP2P).
-func CheckP2PPorts(target, chain string, ports map[string]int) (bool, string) {
-	var portList []int
-	switch strings.ToLower(chain) {
-	case "ethereum":
-		portList = []int{ports["elP2P"], ports["clP2P"]}
-	case "cosmos":
-		portList = []int{ports["cosmosP2P"]}
-	default:
-		portList = []int{ports["elP2P"], ports["cosmosP2P"], ports["clP2P"]}
-	}
-
+// CheckP2PPorts checks that each port accepts a TCP connection on target.
+func CheckP2PPorts(target string, ports []int) (bool, string) {
 	var failed []string
-	for _, port := range portList {
+	for _, port := range ports {
 		conn, err := net.DialTimeout("tcp", net.JoinHostPort(target, strconv.Itoa(port)), 3*time.Second)
 		if err != nil {
-			failed = append(failed, fmt.Sprintf("%d", port))
+			failed = append(failed, strconv.Itoa(port))
 			continue
 		}
 		conn.Close()
 	}
-
 	if len(failed) > 0 {
 		return false, fmt.Sprintf("P2P ports unreachable: %s", strings.Join(failed, ", "))
 	}
-	return true, fmt.Sprintf("all P2P ports reachable: %v", portList)
-}
-
-func doCheckP2PPorts(target string, params map[string]any) (bool, string) {
-	chain := "ethereum"
-	if v, ok := params["chain"]; ok {
-		if s, ok := v.(string); ok {
-			chain = s
-		}
-	}
-	elP2P, _ := params["elP2P"].(int)
-	if elP2P == 0 {
-		elP2P = 30303
-	}
-	clP2P, _ := params["clP2P"].(int)
-	if clP2P == 0 {
-		clP2P = 9000
-	}
-	cosmosP2P, _ := params["cosmosP2P"].(int)
-	if cosmosP2P == 0 {
-		cosmosP2P = 26656
-	}
-
-	return CheckP2PPorts(target, chain, map[string]int{
-		"elP2P":     elP2P,
-		"clP2P":     clP2P,
-		"cosmosP2P": cosmosP2P,
-	})
+	return true, fmt.Sprintf("all P2P ports reachable: %v", ports)
 }
 
 // CheckStaticIP checks if the target resolves to a routable (non-loopback) IP.
 // This does not verify static assignment (DHCP vs static); that requires host/provider confirmation.
 func CheckStaticIP(target string) (bool, string) {
-	if target == "" || target == "127.0.0.1" || target == "localhost" || target == "::1" {
+	if isLocal(target) {
 		return true, "loopback target: public-IP check skipped (pass the node's public hostname to verify)"
 	}
 	ips, err := net.LookupIP(target)
@@ -347,8 +278,4 @@ func CheckStaticIP(target string) (bool, string) {
 		}
 	}
 	return false, "no suitable routable IP found (only loopback/link-local)"
-}
-
-func doCheckStaticIP(target string, params map[string]any) (bool, string) {
-	return CheckStaticIP(target)
 }

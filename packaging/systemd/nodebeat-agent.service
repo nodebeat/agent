@@ -8,15 +8,17 @@ Wants=network-online.target
 Type=simple
 User=nodebeat
 Group=nodebeat
+# Written by install.sh; holds no secret. The ingest token is only in
+# /var/lib/nodebeat/ingest-token (0600), read by the agent and Alloy.
+# NB_VALIDATORS is read from this environment directly. Every NB_* is always
+# written, so no flag ever expands empty in a way the agent cannot parse.
+# Re-run install.sh after editing agent.env by hand.
 EnvironmentFile=/etc/nodebeat/agent.env
-# The ingest token is NOT passed as a flag (argv is world-readable via ps):
-# the agent reads NB_INGEST_TOKEN from this EnvironmentFile directly.
-# NB_VALIDATORS (validator duty tracking, both chains) is read the same way, in both
-# standalone and --enrolled mode.
-# Port overrides (devnet ephemeral host ports). install.sh always writes every
-# NB_*_PORT (defaults = standards, metrics 0 = per-client default), so no
-# flag ever expands empty. Re-run install.sh after editing agent.env.
+# Children are resolved only from here: the Alloy (and Cosmos watcher)
+# binaries install.sh version-checked and copied.
+Environment=PATH=/usr/local/lib/nodebeat/bin
 ExecStart=/usr/local/bin/nodebeat-agent run \
+  --enrolled=${NB_ENROLLED} \
   --target ${NB_TARGET} \
   --remote-write-url ${NB_REMOTE_WRITE_URL} \
   --instance ${NB_INSTANCE} \
@@ -34,28 +36,41 @@ ExecStart=/usr/local/bin/nodebeat-agent run \
   --state-dir /var/lib/nodebeat
 WorkingDirectory=/var/lib/nodebeat
 StateDirectory=nodebeat
+StateDirectoryMode=0750
 Restart=on-failure
 RestartSec=5s
 
-# Hardening: read-only host view, writes confined to the state dir, no new
-# privileges, no exec of anything outside the supervised child binaries.
-# Inbound listeners: agent diagnostics (incl. the Ethereum poller's
-# /chain/metrics and /chain/duties), Alloy UI and cosmos-validator-watcher all bind localhost;
-# nothing listens on an external interface.
+# Hardening. Writes: only the state dir. Exec: only the agent, the binaries
+# in /usr/local/lib/nodebeat/bin, and shared libraries (dynamically linked
+# children need the loader and libc). Inbound listeners: agent diagnostics
+# (incl. the Ethereum poller's /chain/metrics and /chain/duties), Alloy UI
+# and cosmos-validator-watcher all bind localhost; nothing listens on an
+# external interface. ProtectClock is deliberately off: it also blocks the
+# read-only adjtimex call behind node_timex_offset_seconds (ClockSkew rule).
+NoExecPaths=/
+ExecPaths=/usr/local/bin/nodebeat-agent /usr/local/lib/nodebeat/bin /usr/lib /lib /usr/lib64 /lib64
 NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+PrivateDevices=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
+ProtectKernelLogs=true
 ProtectControlGroups=true
+ProtectHostname=true
 RestrictNamespaces=true
-LockPersonality=true
+RestrictRealtime=true
 RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 UMask=0027
-ReadWritePaths=/var/lib/nodebeat
 
 [Install]
 WantedBy=multi-user.target

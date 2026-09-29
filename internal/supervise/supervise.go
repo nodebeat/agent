@@ -6,12 +6,12 @@
 package supervise
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -29,8 +29,6 @@ type Child struct {
 	Args []string
 	// Dir is the child's working directory (the agent state dir).
 	Dir string
-	// Env holds extra VAR=value entries appended to the current environment.
-	Env []string
 }
 
 // Options tunes restart behavior. Zero values select the defaults.
@@ -46,28 +44,27 @@ type Options struct {
 	// a row and fails the supervisor (so systemd can restart the agent).
 	// Default 5.
 	MaxConsecutiveFailures int
-	// StopGrace is how long to wait for SIGTERM before SIGKILL. Default 10s.
+	// StopGrace is how long to wait after SIGTERM before SIGKILL. Default 10s.
 	StopGrace time.Duration
 }
 
-func (o *Options) withDefaults() Options {
-	out := *o
-	if out.RestartBase <= 0 {
-		out.RestartBase = time.Second
+func (o Options) withDefaults() Options {
+	if o.RestartBase <= 0 {
+		o.RestartBase = time.Second
 	}
-	if out.RestartMax <= 0 {
-		out.RestartMax = 30 * time.Second
+	if o.RestartMax <= 0 {
+		o.RestartMax = 30 * time.Second
 	}
-	if out.StableAfter <= 0 {
-		out.StableAfter = time.Minute
+	if o.StableAfter <= 0 {
+		o.StableAfter = time.Minute
 	}
-	if out.MaxConsecutiveFailures <= 0 {
-		out.MaxConsecutiveFailures = 5
+	if o.MaxConsecutiveFailures <= 0 {
+		o.MaxConsecutiveFailures = 5
 	}
-	if out.StopGrace <= 0 {
-		out.StopGrace = 10 * time.Second
+	if o.StopGrace <= 0 {
+		o.StopGrace = 10 * time.Second
 	}
-	return out
+	return o
 }
 
 // Stats is a point-in-time snapshot of one child.
@@ -78,34 +75,29 @@ type Stats struct {
 	Failures  int
 	LastExit  string
 	LastStart time.Time
-	StartedAt time.Time
 }
 
 type childState struct {
 	spec Child
 	mu   sync.Mutex
-	cmd  *exec.Cmd
-	// terminating is set while a terminate sequence owns the process.
-	// It makes concurrent stop requests (shutdown vs. runOnce ctx-cancel)
-	// collapse into one SIGTERM/SIGKILL sequence instead of double-sending.
-	terminating bool
-	running     bool
-	restarts    int
-	failures    int
-	lastExit    string
-	lastStart   time.Time
+	// proc is the live process, nil while the child is not running.
+	proc      *os.Process
+	restarts  int
+	failures  int
+	lastExit  string
+	lastStart time.Time
 }
 
-func (s *childState) stats() Stats {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (c *childState) stats() Stats {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return Stats{
-		Name:      s.spec.Name,
-		Running:   s.running,
-		Restarts:  s.restarts,
-		Failures:  s.failures,
-		LastExit:  s.lastExit,
-		LastStart: s.lastStart,
+		Name:      c.spec.Name,
+		Running:   c.proc != nil,
+		Restarts:  c.restarts,
+		Failures:  c.failures,
+		LastExit:  c.lastExit,
+		LastStart: c.lastStart,
 	}
 }
 
@@ -134,10 +126,10 @@ func (s *Supervisor) Signal(name string, sig os.Signal) error {
 		}
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		if c.cmd == nil || c.cmd.Process == nil {
+		if c.proc == nil {
 			return fmt.Errorf("supervise: %s is not running", name)
 		}
-		return c.cmd.Process.Signal(sig)
+		return c.proc.Signal(sig)
 	}
 	return fmt.Errorf("supervise: unknown child %q", name)
 }
@@ -153,55 +145,37 @@ func (s *Supervisor) Stats() []Stats {
 
 // Run starts all children and blocks until ctx is cancelled (graceful stop,
 // returns nil) or a child exceeds its failure budget (returns an error after
-// stopping the rest).
+// stopping the rest). Stopping is only ever done by cancelling the shared
+// context: each child's own runOnce then terminates its process.
 func (s *Supervisor) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	failed := make(chan error, len(s.children))
-	var wg sync.WaitGroup
+	var (
+		wg      sync.WaitGroup
+		errOnce sync.Once
+		failErr error
+	)
 	for _, c := range s.children {
-		wg.Add(1)
-		go func(c *childState) {
-			defer wg.Done()
+		wg.Go(func() {
 			if err := s.keepAlive(ctx, c); err != nil {
-				select {
-				case failed <- err:
-				default:
-				}
+				errOnce.Do(func() { failErr = err })
 				cancel()
 			}
-		}(c)
+		})
 	}
-
-	select {
-	case err := <-failed:
-		s.stopAll()
-		wg.Wait()
-		return err
-	case <-ctx.Done():
-		s.stopAll()
-		wg.Wait()
-		return nil
-	}
+	wg.Wait()
+	return failErr
 }
 
+// keepAlive restarts c with exponential backoff until ctx ends (nil) or c
+// crashes MaxConsecutiveFailures times in a row (error).
 func (s *Supervisor) keepAlive(ctx context.Context, c *childState) error {
 	delay := s.opts.RestartBase
 	for {
-		// runOnce returns nil on crash (restart accounting below),
-		// ctx.Err() on shutdown (swallowed: shutdown is not a failure),
-		// or a fatal setup error.
-		if err := s.runOnce(ctx, c); err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			return err
-		}
-		select {
-		case <-ctx.Done():
+		s.runOnce(ctx, c)
+		if ctx.Err() != nil {
 			return nil
-		default:
 		}
 
 		c.mu.Lock()
@@ -214,199 +188,105 @@ func (s *Supervisor) keepAlive(ctx context.Context, c *childState) error {
 			delay = s.opts.RestartBase
 		}
 		c.failures++
-		failures := c.failures
+		restarts, failures, lastExit := c.restarts, c.failures, c.lastExit
 		c.mu.Unlock()
 
-		s.log.Printf("supervise: %s exited (%s); restart %d in %s",
-			c.spec.Name, c.stats().LastExit, c.restarts, delay)
+		s.log.Printf("supervise: %s exited (%s); restart %d in %s", c.spec.Name, lastExit, restarts, delay)
 		if failures >= s.opts.MaxConsecutiveFailures {
-			return fmt.Errorf("supervise: %s failed %d times in a row, giving up",
-				c.spec.Name, failures)
+			return fmt.Errorf("supervise: %s failed %d times in a row, giving up", c.spec.Name, failures)
 		}
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-time.After(delay):
 		}
-		delay *= 2
-		if delay > s.opts.RestartMax {
-			delay = s.opts.RestartMax
-		}
+		delay = min(delay*2, s.opts.RestartMax)
 	}
 }
 
-// runOnce starts the child and waits for it to exit or for ctx to end.
-// A nil return always means "proceed" (either clean shutdown or crash;
-// crash accounting happens in keepAlive).
-func (s *Supervisor) runOnce(ctx context.Context, c *childState) error {
-	cmd := exec.Command(c.spec.Path, c.spec.Args...)
+// runOnce starts the child and waits for it to exit. When ctx ends, the
+// standard library sends SIGTERM (cmd.Cancel) and, after StopGrace, SIGKILL
+// (cmd.WaitDelay).
+func (s *Supervisor) runOnce(ctx context.Context, c *childState) {
+	out := &lineLogger{log: s.log, prefix: "[" + c.spec.Name + "] "}
+	cmd := exec.CommandContext(ctx, c.spec.Path, c.spec.Args...)
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = s.opts.StopGrace
 	cmd.Dir = c.spec.Dir
-	cmd.Env = append([]string{}, envOrOS(c.spec.Env)...)
+	cmd.Env = childEnv()
+	cmd.Stdout, cmd.Stderr = out, out
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("supervise: %s stdout pipe: %w", c.spec.Name, err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("supervise: %s stderr pipe: %w", c.spec.Name, err)
-	}
-	if err := cmd.Start(); err != nil {
-		c.setStartFailed(fmt.Sprintf("start failed: %v", err))
-		return nil
-	}
-	c.setRunning(cmd)
-
-	go scanLines(stdout, func(line string) {
-		s.log.Printf("[%s] %s", c.spec.Name, line)
-	})
-	go scanLines(stderr, func(line string) {
-		s.log.Printf("[%s] %s", c.spec.Name, line)
-	})
-
-	done := make(chan error, 1)
-	exited := make(chan struct{})
-	go func() {
-		done <- cmd.Wait()
-		close(exited)
-	}()
-
-	select {
-	case <-ctx.Done():
-		if claimed := s.claimTerminate(c, cmd); claimed != nil {
-			terminate(claimed, s.opts.StopGrace, func() bool {
-				select {
-				case <-exited:
-					return true
-				default:
-					return false
-				}
-			})
-			s.unclaimTerminate(c)
-		}
-		err := <-done
-		c.setExited(exitString(cmd, err))
-		return ctx.Err()
-	case err := <-done:
-		c.setExited(exitString(cmd, err))
-		return nil
-	}
-}
-
-func (s *Supervisor) stopAll() {
-	for _, c := range s.children {
-		if claimed := s.claimTerminate(c, nil); claimed != nil {
-			terminate(claimed, s.opts.StopGrace, c.isStopped)
-			s.unclaimTerminate(c)
-		}
-	}
-}
-
-// claimTerminate marks the child terminating and returns its live process.
-// Passing cmd matches runOnce's own process (avoids acting on a process
-// started after a concurrent restart); nil matches whatever is live.
-// Returns nil when there is nothing to terminate.
-func (s *Supervisor) claimTerminate(c *childState, cmd *exec.Cmd) *exec.Cmd {
+	// lastStart is the attempt time, also for a failed start: left stale,
+	// keepAlive would read every failed start as a long stable run, reset
+	// the streak, and retry at base delay forever.
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.cmd == nil || c.cmd.Process == nil || c.terminating {
-		return nil
-	}
-	if cmd != nil && c.cmd != cmd {
-		return nil
-	}
-	c.terminating = true
-	return c.cmd
-}
-
-func (s *Supervisor) unclaimTerminate(c *childState) {
-	c.mu.Lock()
-	c.terminating = false
+	c.lastStart = time.Now()
 	c.mu.Unlock()
-}
-
-// isStopped reports whether the child currently has no live process.
-// Guarded by the child mutex, so it is race-free unlike ProcessState polling.
-func (c *childState) isStopped() bool {
+	if err := cmd.Start(); err != nil {
+		c.setExited(fmt.Sprintf("start failed: %v", err))
+		return
+	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.cmd == nil || c.cmd.Process == nil || !c.running
-}
+	c.proc = cmd.Process
+	c.mu.Unlock()
 
-func (c *childState) setRunning(cmd *exec.Cmd) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.cmd = cmd
-	c.running = true
-	c.terminating = false
-	c.lastStart = time.Now()
-}
-
-// setStartFailed records a failed start as an instant exit. lastStart is the
-// attempt time: left stale, keepAlive would read every failed start as a
-// long stable run, reset the streak, and retry at base delay forever.
-func (c *childState) setStartFailed(s string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.cmd = nil
-	c.running = false
-	c.lastExit = s
-	c.lastStart = time.Now()
+	err := cmd.Wait()
+	out.flush()
+	exit := "exit 0"
+	if cmd.ProcessState != nil {
+		exit = "exit " + cmd.ProcessState.String()
+	} else if err != nil {
+		exit = err.Error()
+	}
+	c.setExited(exit)
 }
 
 func (c *childState) setExited(s string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.cmd = nil
-	c.running = false
+	c.proc = nil
 	c.lastExit = s
 }
 
-// terminate asks nicely (SIGTERM), then insists (SIGKILL) after grace.
-// exited reports process death without touching cmd.ProcessState (which only
-// cmd.Wait may read — polling it from another goroutine is a data race).
-// terminate never calls Wait; the caller owns Wait on the exec.Cmd.
-func terminate(cmd *exec.Cmd, grace time.Duration, exited func() bool) {
-	if cmd.Process == nil {
-		return
-	}
-	_ = cmd.Process.Signal(syscall.SIGTERM)
-	deadline := time.Now().Add(grace)
-	for time.Now().Before(deadline) {
-		if exited() {
-			return
+// childEnv is the agent's environment minus the ingest token: Alloy reads
+// it from its 0600 config file, and no other child needs it.
+func childEnv() []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "NB_INGEST_TOKEN=") && !strings.HasPrefix(kv, "NODEBEAT_INGEST_TOKEN=") {
+			env = append(env, kv)
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
-	if exited() {
-		return
-	}
-	// Last check via Signal(0): the process may have died without the
-	// exited flag flipping yet (e.g. Wait not yet reaped).
-	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
-		return
-	}
-	_ = cmd.Process.Kill()
+	return env
 }
 
-func exitString(cmd *exec.Cmd, err error) string {
-	if err == nil {
-		return "exit 0"
-	}
-	if cmd.ProcessState != nil {
-		return "exit " + cmd.ProcessState.String()
-	}
-	return err.Error()
+// lineLogger forwards a child's output to the logger line by line. The same
+// instance is both Stdout and Stderr, so exec serializes its Write calls.
+type lineLogger struct {
+	log    Logger
+	prefix string
+	buf    []byte
 }
 
-func scanLines(r io.Reader, emit func(string)) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 64*1024), 1024*1024)
-	for sc.Scan() {
-		emit(sc.Text())
+func (l *lineLogger) Write(p []byte) (int, error) {
+	l.buf = append(l.buf, p...)
+	for {
+		i := bytes.IndexByte(l.buf, '\n')
+		if i < 0 {
+			break
+		}
+		l.log.Printf("%s%s", l.prefix, l.buf[:i])
+		l.buf = l.buf[i+1:]
 	}
+	if len(l.buf) > 64<<10 { // no newline in 64 KiB: emit what we have
+		l.flush()
+	}
+	return len(p), nil
 }
 
-func envOrOS(extra []string) []string {
-	return append(os.Environ(), extra...)
+func (l *lineLogger) flush() {
+	if len(l.buf) > 0 {
+		l.log.Printf("%s%s", l.prefix, l.buf)
+		l.buf = nil
+	}
 }

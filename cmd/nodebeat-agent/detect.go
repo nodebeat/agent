@@ -42,7 +42,7 @@ func runDetect(args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	res, err := detect.DetectFiltered(ctx, *target, ports, chain)
+	res, err := detect.Detect(ctx, *target, ports, chain)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "detect:", err)
 		return 1

@@ -195,6 +195,8 @@ func TestNormalizeValidators(t *testing.T) {
 		{detect.ChainCosmos, []string{"CC810073"}, "", true},
 		{detect.ChainCosmos, []string{"12345"}, "", true}, // an Ethereum index
 		{detect.ChainEthereum, []string{"12345", "7"}, "12345,7", false},
+		{detect.ChainEthereum, []string{"7", "0xAB" + strings.Repeat("0", 94), "7", "0xab" + strings.Repeat("0", 94)}, "7,0xab" + strings.Repeat("0", 94), false},
+		{detect.ChainEthereum, manyIndices(1001), "", true}, // over MaxValidators
 		{detect.ChainEthereum, []string{hexAddr}, "", true},
 		{detect.ChainCosmos, nil, "", false},
 	} {
@@ -211,11 +213,19 @@ func TestNormalizeValidators(t *testing.T) {
 	}
 }
 
+func manyIndices(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = strconv.Itoa(i)
+	}
+	return out
+}
+
 func TestManifestContents(t *testing.T) {
 	m := buildManifest(fullFixture(), Config{
 		RemoteWriteURL: "https://ingest:8428/api/v1/write",
 		StateDir:       "s",
-	}, "http://127.0.0.1:19090/chain/metrics", "", nil)
+	}, "node9.example", "http://127.0.0.1:19090/chain/metrics", nil)
 	raw, err := json.Marshal(m)
 	if err != nil {
 		t.Fatal(err)
@@ -565,4 +575,67 @@ func (e *httpError) Error() string {
 
 func itoa(n int) string {
 	return strconv.Itoa(n)
+}
+
+// A portal rename (enrolled heartbeat) re-renders the instance label and
+// reloads Alloy in place; config.alloy references the token file and never
+// holds the token.
+func TestSetInstanceReloadsAlloy(t *testing.T) {
+	dir := t.TempDir()
+	argsLog := filepath.Join(dir, "args.log")
+	t.Setenv("ARGS_LOG", argsLog)
+	tokenFile := filepath.Join(dir, "ingest-token")
+	if err := os.WriteFile(tokenFile, []byte("nb_ingest_SECRET"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := New(Config{
+		Target:          "127.0.0.1",
+		Instance:        "old-name",
+		TenantID:        "org_1",
+		RemoteWriteURL:  "https://ingest:8428/api/v1/write",
+		IngestTokenFile: tokenFile,
+		AlloyBin:        fakeBin(t, t.TempDir(), "alloy.sh", true),
+		StateDir:        dir,
+		MetricsAddr:     "127.0.0.1:" + itoa(freePort(t)),
+	}, testLogger())
+	if err := r.materialize(fullFixture()); err != nil {
+		t.Fatal(err)
+	}
+	cfg := readFile(t, r.ConfigPath())
+	if strings.Contains(cfg, "nb_ingest_SECRET") || !strings.Contains(cfg, `credentials_file = "`+tokenFile+`"`) {
+		t.Fatalf("config.alloy must reference the token file, not inline it:\n%s", cfg)
+	}
+	if !strings.Contains(cfg, `tenant_id = "org_1"`) {
+		t.Errorf("tenant_id label missing:\n%s", cfg)
+	}
+
+	stop := runUntilCancel(t, r)
+	defer stop()
+	waitFor(t, 5*time.Second, "alloy running", func() bool {
+		st := r.ChildrenStats()
+		return len(st) == 1 && st[0].Running
+	})
+	if err := r.SetInstance("new-name"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg := readFile(t, r.ConfigPath()); !strings.Contains(cfg, `instance = "new-name"`) || strings.Contains(cfg, "old-name") {
+		t.Errorf("rename not rendered:\n%s", cfg)
+	}
+	if m := r.Manifest(); m.Target != "new-name" {
+		t.Errorf("manifest target = %q, want new-name", m.Target)
+	}
+	if st := r.ChildrenStats(); st[0].Restarts != 0 || !st[0].Running {
+		t.Errorf("alloy restarted on rename (%+v); want SIGHUP reload", st[0])
+	}
+	if err := r.SetInstance("new-name"); err != nil { // no-op
+		t.Fatal(err)
+	}
+}
+
+func TestStateDirMadeAbsolute(t *testing.T) {
+	t.Chdir(t.TempDir())
+	r := New(Config{Target: "h"}, testLogger())
+	if !filepath.IsAbs(r.ConfigPath()) {
+		t.Errorf("config path %q is relative; Alloy runs with the state dir as cwd", r.ConfigPath())
+	}
 }

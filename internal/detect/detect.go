@@ -1,17 +1,19 @@
 // Package detect identifies the chain clients running on a target host
 // by probing well-known ports. Supports Ethereum (EL/CL) and Cosmos (CometBFT).
 //
-// The target host is always explicit: test and customer nodes run on machines
-// other than the one running OpenCode, so this package must never assume
-// localhost.
+// Every probe is a read-only HTTP request to the explicit target host (never
+// an assumed localhost): web3_clientVersion over JSON-RPC, GET
+// /eth/v1/node/version, GET /status, GET /cosmos/base/tendermint/v1beta1/node_info,
+// and a GET of each native metrics URL. Redirects are not followed and
+// response bodies are capped.
 package detect
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -38,13 +40,17 @@ const (
 	KindCosmosREST    = "cosmos-rest"
 )
 
+const (
+	probeTimeout = 3 * time.Second
+	maxBody      = 1 << 20
+)
+
 // Ports holds the discovery ports for Ethereum and Cosmos.
 // Discovery, P2P and Cosmos-metrics fields match the standard client layout.
 // ELMetrics/CLMetrics/CosmosMetrics are overrides: 0 means "per detected
 // client default" (EL 6060/9001/9545, CL 5054/8008/8080, CometBFT 26660).
 // The override exists for Docker/Kurtosis devnets, where the host-side ports
-// are ephemeral: pass the inspected mappings instead of forwarding standard
-// ports with socat. Production keeps the defaults (unset = standard).
+// are ephemeral. Production keeps the defaults (unset = standard).
 type Ports struct {
 	ELRPC         int // Ethereum JSON-RPC (default 8545)
 	Beacon        int // Beacon Node API (default 5052)
@@ -58,19 +64,16 @@ type Ports struct {
 	CosmosP2P     int // CometBFT P2P TCP (default 26656; onboard check only)
 }
 
-// DefaultPorts returns the standard discovery ports.
+// DefaultPorts returns the standard discovery ports (metrics overrides 0).
 func DefaultPorts() Ports {
 	return Ports{
-		ELRPC:         8545,
-		Beacon:        5052,
-		ELMetrics:     0,
-		CLMetrics:     0,
-		ELP2P:         30303,
-		CLP2P:         9000,
-		CosmosRPC:     26657,
-		CosmosREST:    1317,
-		CosmosMetrics: 0,
-		CosmosP2P:     26656,
+		ELRPC:      8545,
+		Beacon:     5052,
+		ELP2P:      30303,
+		CLP2P:      9000,
+		CosmosRPC:  26657,
+		CosmosREST: 1317,
+		CosmosP2P:  26656,
 	}
 }
 
@@ -78,44 +81,34 @@ func DefaultPorts() Ports {
 // Metrics overrides keep 0 (= per-client default).
 func (p Ports) WithDefaults() Ports {
 	d := DefaultPorts()
-	if p.ELRPC == 0 {
-		p.ELRPC = d.ELRPC
-	}
-	if p.Beacon == 0 {
-		p.Beacon = d.Beacon
-	}
-	if p.ELP2P == 0 {
-		p.ELP2P = d.ELP2P
-	}
-	if p.CLP2P == 0 {
-		p.CLP2P = d.CLP2P
-	}
-	if p.CosmosRPC == 0 {
-		p.CosmosRPC = d.CosmosRPC
-	}
-	if p.CosmosREST == 0 {
-		p.CosmosREST = d.CosmosREST
-	}
-	if p.CosmosP2P == 0 {
-		p.CosmosP2P = d.CosmosP2P
+	for _, f := range []struct {
+		v *int
+		d int
+	}{
+		{&p.ELRPC, d.ELRPC}, {&p.Beacon, d.Beacon}, {&p.ELP2P, d.ELP2P}, {&p.CLP2P, d.CLP2P},
+		{&p.CosmosRPC, d.CosmosRPC}, {&p.CosmosREST, d.CosmosREST}, {&p.CosmosP2P, d.CosmosP2P},
+	} {
+		if *f.v == 0 {
+			*f.v = f.d
+		}
 	}
 	return p
 }
 
 // BindPortFlags registers the --*-port override flags on fs, writing into p.
-// One helper so detect/run/enroll/onboard expose identical flags. Unset =
-// standard ports (metrics 0 = per detected client default).
+// One helper so detect/run/enroll/onboard expose identical flags.
 func BindPortFlags(fs *flag.FlagSet, p *Ports) {
-	fs.IntVar(&p.ELRPC, "el-rpc-port", 8545, "EL JSON-RPC port on the target host")
-	fs.IntVar(&p.Beacon, "beacon-port", 5052, "CL Beacon API port on the target host")
+	d := DefaultPorts()
+	fs.IntVar(&p.ELRPC, "el-rpc-port", d.ELRPC, "EL JSON-RPC port on the target host")
+	fs.IntVar(&p.Beacon, "beacon-port", d.Beacon, "CL Beacon API port on the target host")
 	fs.IntVar(&p.ELMetrics, "el-metrics-port", 0, "EL native metrics port override (0 = per detected client default)")
 	fs.IntVar(&p.CLMetrics, "cl-metrics-port", 0, "CL native metrics port override (0 = per detected client default)")
-	fs.IntVar(&p.ELP2P, "el-p2p-port", 30303, "EL P2P TCP port on the target host (onboard check)")
-	fs.IntVar(&p.CLP2P, "cl-p2p-port", 9000, "CL P2P TCP port on the target host (onboard check)")
-	fs.IntVar(&p.CosmosRPC, "cosmos-rpc-port", 26657, "CometBFT RPC port on the target host")
-	fs.IntVar(&p.CosmosREST, "cosmos-rest-port", 1317, "Cosmos REST port on the target host")
+	fs.IntVar(&p.ELP2P, "el-p2p-port", d.ELP2P, "EL P2P TCP port on the target host (onboard check)")
+	fs.IntVar(&p.CLP2P, "cl-p2p-port", d.CLP2P, "CL P2P TCP port on the target host (onboard check)")
+	fs.IntVar(&p.CosmosRPC, "cosmos-rpc-port", d.CosmosRPC, "CometBFT RPC port on the target host")
+	fs.IntVar(&p.CosmosREST, "cosmos-rest-port", d.CosmosREST, "Cosmos REST port on the target host")
 	fs.IntVar(&p.CosmosMetrics, "cosmos-metrics-port", 0, "CometBFT metrics port override (0 = 26660)")
-	fs.IntVar(&p.CosmosP2P, "cosmos-p2p-port", 26656, "CometBFT P2P TCP port on the target host (onboard check)")
+	fs.IntVar(&p.CosmosP2P, "cosmos-p2p-port", d.CosmosP2P, "CometBFT P2P TCP port on the target host (onboard check)")
 }
 
 // metricsEndpoint is a client's native Prometheus endpoint.
@@ -143,10 +136,10 @@ var clMetricsEndpoints = map[string]metricsEndpoint{
 	"grandine":   {Port: 8008, Path: "/metrics"},
 }
 
-// Known CometBFT native metrics endpoints (port + path).
-var cometbftMetricsEndpoints = map[string]metricsEndpoint{
-	"cometbft": {Port: 26660, Path: "/metrics"},
-}
+// CometBFT (and legacy Tendermint) all use the same metrics layout. /status
+// often reports a bare version ("1.0.0", verified live on cometbft v1.0.0),
+// so the client is not identified: an answering RPC is enough.
+var cometbftMetrics = metricsEndpoint{Port: 26660, Path: "/metrics"}
 
 // Endpoint is a single reachable chain endpoint on the target host.
 type Endpoint struct {
@@ -163,7 +156,7 @@ type Result struct {
 	Endpoints []Endpoint `json:"endpoints"`
 }
 
-// MetricsURLs returns the native metrics endpoint URLs by kind.
+// MetricsURLs returns the endpoint URLs of the given kind.
 func (r *Result) MetricsURLs(kind string) []string {
 	var out []string
 	for _, e := range r.Endpoints {
@@ -177,20 +170,18 @@ func (r *Result) MetricsURLs(kind string) []string {
 // IdentifyEL maps a web3_clientVersion string to a known EL client name,
 // or "" when unknown.
 func IdentifyEL(clientVersion string) string {
-	v := strings.ToLower(clientVersion)
-	for _, name := range []string{"nethermind", "ethereumjs", "erigon", "besu", "reth", "geth"} {
-		if strings.Contains(v, name) {
-			return name
-		}
-	}
-	return ""
+	return identify(clientVersion, "nethermind", "ethereumjs", "erigon", "besu", "reth", "geth")
 }
 
 // IdentifyCL maps a Beacon /eth/v1/node/version string to a known CL client
 // name, or "" when unknown.
 func IdentifyCL(nodeVersion string) string {
-	v := strings.ToLower(nodeVersion)
-	for _, name := range []string{"lighthouse", "grandine", "lodestar", "nimbus", "prysm", "teku"} {
+	return identify(nodeVersion, "lighthouse", "grandine", "lodestar", "nimbus", "prysm", "teku")
+}
+
+func identify(version string, names ...string) string {
+	v := strings.ToLower(version)
+	for _, name := range names {
 		if strings.Contains(v, name) {
 			return name
 		}
@@ -198,127 +189,98 @@ func IdentifyCL(nodeVersion string) string {
 	return ""
 }
 
-// IdentifyCosmos maps a CometBFT /status node info to a known client name,
-// or "" when unknown.
-func IdentifyCosmos(version string) string {
-	v := strings.ToLower(version)
-	// CometBFT is the only one currently, but keep extensible
-	if strings.Contains(v, "cometbft") {
-		return "cometbft"
-	}
-	if strings.Contains(v, "tendermint") {
-		return "tendermint"
-	}
-	return ""
-}
-
-// Detect probes target with the default ports and reports what it finds.
-// It returns an error only when nothing chain-related is detected at all.
-func Detect(ctx context.Context, target string) (*Result, error) {
-	return DetectWithPorts(ctx, target, DefaultPorts())
-}
-
-// ParseChainFilter normalizes a --chain flag for DetectFiltered: ""
-// (auto-detect all families), "ethereum", or "cosmos".
+// ParseChainFilter normalizes a --chain flag for Detect: "" (auto-detect
+// all families), "ethereum", or "cosmos".
 func ParseChainFilter(c string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(c)) {
+	switch c = strings.ToLower(strings.TrimSpace(c)); c {
 	case "", ChainEthereum, ChainCosmos:
-		return strings.ToLower(strings.TrimSpace(c)), nil
+		return c, nil
 	default:
 		return "", fmt.Errorf("unsupported chain %q: use ethereum or cosmos (empty = auto)", c)
 	}
 }
 
-// DetectWithPorts probes target with explicit port overrides and reports
-// what it finds. Zero metrics fields mean per-client defaults.
-func DetectWithPorts(ctx context.Context, target string, ports Ports) (*Result, error) {
-	return DetectFiltered(ctx, target, ports, "")
-}
-
-// DetectFiltered probes target like DetectWithPorts but restricts probing
-// to one chain family ("ethereum" or "cosmos") when chain is non-empty —
-// for hosts running both, where each agent instance handles one chain.
-// Empty chain probes all families (current behavior).
-func DetectFiltered(ctx context.Context, target string, ports Ports, chain string) (*Result, error) {
-	return detectWith(ctx, target, ports.WithDefaults(), strings.ToLower(strings.TrimSpace(chain)), nil, nil, nil)
-}
-
-func detectWith(ctx context.Context, target string, ports Ports, chain string, customEL, customCL, customCometBFT map[string]metricsEndpoint) (*Result, error) {
-	// Use custom maps if provided, otherwise use defaults
-	elM := elMetricsEndpoints
-	if customEL != nil {
-		elM = customEL
+// Detect probes target and reports what it finds. Zero ports select the
+// standard ones (see Ports). A non-empty chain ("ethereum"/"cosmos", see
+// ParseChainFilter) restricts probing to that family, for hosts running
+// both where each agent instance handles one chain. It returns an error
+// only when nothing chain-related is detected at all.
+func Detect(ctx context.Context, target string, ports Ports, chain string) (*Result, error) {
+	ports = ports.WithDefaults()
+	c := &http.Client{
+		Timeout:       probeTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	clM := clMetricsEndpoints
-	if customCL != nil {
-		clM = customCL
+	base := func(port int) string { return "http://" + net.JoinHostPort(target, strconv.Itoa(port)) }
+	metrics := func(me metricsEndpoint, override int) string {
+		if override != 0 {
+			me.Port = override
+		}
+		return base(me.Port) + me.Path
 	}
-	cometBFTM := cometbftMetricsEndpoints
-	if customCometBFT != nil {
-		cometBFTM = customCometBFT
-	}
-	httpClient := &http.Client{Timeout: 3 * time.Second}
 	res := &Result{Target: target}
-	wantEth := chain == "" || chain == ChainEthereum
-	wantCosmos := chain == "" || chain == ChainCosmos
+	add := func(kind, u string) { res.Endpoints = append(res.Endpoints, Endpoint{Kind: kind, URL: u}) }
 
-	// Try Ethereum EL
-	if wantEth {
-		rpcURL := "http://" + net.JoinHostPort(target, strconv.Itoa(ports.ELRPC))
-		if version, err := probeJSONRPCClientVersion(ctx, httpClient, rpcURL); err == nil {
+	if chain == "" || chain == ChainEthereum {
+		rpcURL := base(ports.ELRPC)
+		var el struct {
+			Result string `json:"result"`
+		}
+		rpcBody := `{"jsonrpc":"2.0","id":1,"method":"web3_clientVersion","params":[]}`
+		if getJSON(ctx, c, http.MethodPost, rpcURL, rpcBody, &el) == nil && el.Result != "" {
 			res.Chain = ChainEthereum
-			res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindELRPC, URL: rpcURL})
-			if name := IdentifyEL(version); name != "" {
-				res.ELClient = name
-				if u, ok := overriddenMetricsURL(target, name, ports.ELMetrics, elM); ok {
-					if reachable(ctx, httpClient, u) {
-						res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindELMetrics, URL: u})
-					}
+			add(KindELRPC, rpcURL)
+			res.ELClient = IdentifyEL(el.Result)
+			if me, ok := elMetricsEndpoints[res.ELClient]; ok {
+				if u := metrics(me, ports.ELMetrics); reachable(ctx, c, u) {
+					add(KindELMetrics, u)
 				}
 			}
 		}
 
-		// Try Ethereum CL
-		beaconBase := "http://" + net.JoinHostPort(target, strconv.Itoa(ports.Beacon))
-		if version, err := probeBeaconNodeVersion(ctx, httpClient, beaconBase+"/eth/v1/node/version"); err == nil {
+		beaconURL := base(ports.Beacon)
+		var cl struct {
+			Data struct {
+				Version string `json:"version"`
+			} `json:"data"`
+		}
+		if getJSON(ctx, c, http.MethodGet, beaconURL+"/eth/v1/node/version", "", &cl) == nil && cl.Data.Version != "" {
 			res.Chain = ChainEthereum
-			res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindCLBeacon, URL: beaconBase})
-			if name := IdentifyCL(version); name != "" {
-				res.CLClient = name
-				if u, ok := overriddenMetricsURL(target, name, ports.CLMetrics, clM); ok {
-					if reachable(ctx, httpClient, u) {
-						res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindCLMetrics, URL: u})
-					}
+			add(KindCLBeacon, beaconURL)
+			res.CLClient = IdentifyCL(cl.Data.Version)
+			if me, ok := clMetricsEndpoints[res.CLClient]; ok {
+				if u := metrics(me, ports.CLMetrics); reachable(ctx, c, u) {
+					add(KindCLMetrics, u)
 				}
 			}
 		}
 	}
 
-	// Try Cosmos (CometBFT) - probe RPC first
-	if wantCosmos {
-		cosmosRPC := "http://" + net.JoinHostPort(target, strconv.Itoa(ports.CosmosRPC))
-		if version, err := probeCometBFTRPC(ctx, httpClient, cosmosRPC); err == nil {
+	if chain == "" || chain == ChainCosmos {
+		rpcURL := base(ports.CosmosRPC)
+		var status struct {
+			Result struct {
+				NodeInfo struct {
+					Version string `json:"version"`
+				} `json:"node_info"`
+			} `json:"result"`
+		}
+		if getJSON(ctx, c, http.MethodGet, rpcURL+"/status", "", &status) == nil && status.Result.NodeInfo.Version != "" {
 			if res.Chain == "" {
 				res.Chain = ChainCosmos
 			}
-			res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindCosmosRPC, URL: cosmosRPC})
-			// Real CometBFT /status often reports a bare version ("1.0.0",
-			// no client token — verified live on cometbft v1.0.0), and
-			// legacy Tendermint nodes identify as "tendermint", which has
-			// no table entry. RPC reachable still means CometBFT-family
-			// with the standard metrics layout (:26660/metrics), so fall
-			// back to it instead of silently dropping consensus metrics
-			// (which would blind the CosmosHeadStalled hot-path rule).
-			name := IdentifyCosmos(version)
-			if _, known := cometBFTM[name]; !known {
-				name = "cometbft"
+			add(KindCosmosRPC, rpcURL)
+			if u := metrics(cometbftMetrics, ports.CosmosMetrics); reachable(ctx, c, u) {
+				add(KindCosmosMetrics, u)
 			}
-			if u, ok := overriddenMetricsURL(target, name, ports.CosmosMetrics, cometBFTM); ok && reachable(ctx, httpClient, u) {
-				res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindCosmosMetrics, URL: u})
+			restURL := base(ports.CosmosREST)
+			var info struct {
+				DefaultNodeInfo struct {
+					Version string `json:"version"`
+				} `json:"default_node_info"`
 			}
-			cosmosREST := "http://" + net.JoinHostPort(target, strconv.Itoa(ports.CosmosREST))
-			if _, err := probeCosmosREST(ctx, httpClient, cosmosREST); err == nil {
-				res.Endpoints = append(res.Endpoints, Endpoint{Kind: KindCosmosREST, URL: cosmosREST})
+			if getJSON(ctx, c, http.MethodGet, restURL+"/cosmos/base/tendermint/v1beta1/node_info", "", &info) == nil && info.DefaultNodeInfo.Version != "" {
+				add(KindCosmosREST, restURL)
 			}
 		}
 	}
@@ -329,167 +291,36 @@ func detectWith(ctx context.Context, target string, ports Ports, chain string, c
 	return res, nil
 }
 
-func metricsURL(target string, me metricsEndpoint) string {
-	return "http://" + net.JoinHostPort(target, strconv.Itoa(me.Port)) + me.Path
-}
-
-// overriddenMetricsURL resolves the native metrics URL for a detected client.
-// A nonzero override port replaces the table port but keeps the client's
-// path (paths are client-fixed; only devnet host ports shift). ok is false
-// when the client is unknown to the table.
-func overriddenMetricsURL(target, client string, override int, table map[string]metricsEndpoint) (u string, ok bool) {
-	me, ok := table[client]
-	if !ok {
-		return "", false
-	}
-	if override != 0 {
-		me.Port = override
-	}
-	return metricsURL(target, me), true
-}
-
-// probeJSONRPCClientVersion calls web3_clientVersion on an EL JSON-RPC URL.
-func probeJSONRPCClientVersion(ctx context.Context, httpClient *http.Client, url string) (string, error) {
-	body, err := json.Marshal(map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "web3_clientVersion",
-		"params":  []any{},
-	})
+// getJSON sends one request (a JSON body when body is non-empty) and decodes
+// a 200 JSON response into out.
+func getJSON(ctx context.Context, c *http.Client, method, url, body string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, method, url, strings.NewReader(body))
 	if err != nil {
-		return "", err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("json-rpc %s returned %s", url, resp.Status)
-	}
-	var out struct {
-		Result string `json:"result"`
-		Error  *struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", fmt.Errorf("decode json-rpc response from %s: %w", url, err)
-	}
-	if out.Error != nil {
-		return "", fmt.Errorf("json-rpc error from %s: %s", url, out.Error.Message)
-	}
-	if out.Result == "" {
-		return "", fmt.Errorf("empty web3_clientVersion from %s", url)
-	}
-	return out.Result, nil
-}
-
-// probeBeaconNodeVersion reads the version field of the Beacon
-// /eth/v1/node/version endpoint.
-func probeBeaconNodeVersion(ctx context.Context, httpClient *http.Client, url string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", err
+		return err
 	}
 	req.Header.Set("Accept", "application/json")
-	resp, err := httpClient.Do(req)
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.Do(req)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("beacon %s returned %s", url, resp.Status)
+		return fmt.Errorf("%s %s: %s", method, url, resp.Status)
 	}
-	var out struct {
-		Data struct {
-			Version string `json:"version"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", fmt.Errorf("decode beacon response from %s: %w", url, err)
-	}
-	if out.Data.Version == "" {
-		return "", fmt.Errorf("empty node version from %s", url)
-	}
-	return out.Data.Version, nil
-}
-
-// probeCometBFTRPC calls /status on a CometBFT RPC endpoint.
-func probeCometBFTRPC(ctx context.Context, httpClient *http.Client, url string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url+"/status", nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Accept", "application/json")
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("cometbft rpc %s returned %s", url, resp.Status)
-	}
-	var out struct {
-		Result struct {
-			NodeInfo struct {
-				Version string `json:"version"`
-				Network string `json:"network"`
-			} `json:"node_info"`
-		} `json:"result"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", fmt.Errorf("decode cometbft response from %s: %w", url, err)
-	}
-	if out.Result.NodeInfo.Version == "" {
-		return "", fmt.Errorf("empty cometbft version from %s", url)
-	}
-	return out.Result.NodeInfo.Version, nil
-}
-
-// probeCosmosREST calls /cosmos/base/tendermint/v1beta1/node_info on Cosmos REST.
-func probeCosmosREST(ctx context.Context, httpClient *http.Client, url string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url+"/cosmos/base/tendermint/v1beta1/node_info", nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Accept", "application/json")
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("cosmos rest %s returned %s", url, resp.Status)
-	}
-	var out struct {
-		DefaultNodeInfo struct {
-			Version string `json:"version"`
-			Network string `json:"network"`
-		} `json:"default_node_info"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", fmt.Errorf("decode cosmos rest response from %s: %w", url, err)
-	}
-	if out.DefaultNodeInfo.Version == "" {
-		return "", fmt.Errorf("empty cosmos rest version from %s", url)
-	}
-	return out.DefaultNodeInfo.Version, nil
+	return json.NewDecoder(io.LimitReader(resp.Body, maxBody)).Decode(out)
 }
 
 // reachable reports whether a URL answers HTTP at all. Any status (even 404)
 // counts: the port is open and serving.
-func reachable(ctx context.Context, httpClient *http.Client, url string) bool {
+func reachable(ctx context.Context, c *http.Client, url string) bool {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return false
 	}
-	resp, err := httpClient.Do(req)
+	resp, err := c.Do(req)
 	if err != nil {
 		return false
 	}

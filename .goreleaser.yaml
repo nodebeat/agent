@@ -6,7 +6,15 @@
 # which needs GITHUB_TOKEN. Signing is keyless (Sigstore Fulcio/Rekor via the
 # CI job's OIDC identity); SLSA provenance comes from
 # slsa-framework/slsa-github-generator once CI exists.
+#
+# Each archive also carries our portable build of cosmos-validator-watcher
+# (scripts/release/build-watcher.sh, needs Docker). Alloy is not shipped:
+# packaging/install.sh downloads the version pinned in packaging/deps.lock.
 version: 2
+
+before:
+  hooks:
+    - scripts/release/build-watcher.sh build/watcher
 
 project_name: nodebeat-agent
 
@@ -45,6 +53,12 @@ archives:
       - LICENSE
       - packaging/*
       - packaging/**/*
+      - src: "build/watcher/{{ .Arch }}/cosmos-validator-watcher"
+        dst: .
+        strip_parent: true
+      - src: "build/watcher/{{ .Arch }}/LICENSE"
+        dst: THIRD_PARTY/cosmos-validator-watcher
+        strip_parent: true
 
 checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"

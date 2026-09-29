@@ -5,15 +5,17 @@ groups:
   - name: cosmos-standard
     interval: 30s
     rules:
+      # Per validator, like CosmosValidatorJailed (address = hex consensus
+      # address from the watcher).
       - alert: CosmosMissedBlocksHigh
-        expr: max by (instance) (cosmos_validator_watcher_consecutive_missed_blocks) > 5
+        expr: max by (instance, address) (cosmos_validator_watcher_consecutive_missed_blocks) > 5
         for: 5m
         labels:
           severity: warning
           component: consensus
           chain: cosmos
         annotations:
-          summary: "Validator missing blocks for 5m ({{ $labels.instance }}, {{ $value }} consecutive)"
+          summary: "Validator {{ $labels.address }} missing blocks for 5m ({{ $labels.instance }}, {{ $value }} consecutive)"
           description: >-
             More than 5 consecutive missed blocks sustained 5 minutes. A
             growing streak precedes downtime-jailing. Check app liveness,
@@ -21,28 +23,29 @@ groups:
 
       - alert: CosmosVotingPowerDrop
         expr: |
-          (
-            avg_over_time(cosmos_validator_watcher_tokens[1h])
-              - cosmos_validator_watcher_tokens
-          )
-          / avg_over_time(cosmos_validator_watcher_tokens[1h]) > 0.1
+          max by (instance, address) (
+            (
+              avg_over_time(cosmos_validator_watcher_tokens[1h])
+                - cosmos_validator_watcher_tokens
+            )
+            / avg_over_time(cosmos_validator_watcher_tokens[1h])
+          ) > 0.1
         for: 10m
         labels:
           severity: warning
           component: consensus
           chain: cosmos
         annotations:
-          summary: "Voting power down >10% over 1h ({{ $labels.instance }})"
+          summary: "Validator {{ $labels.address }} voting power down >10% over 1h ({{ $labels.instance }})"
           description: >-
             Staked tokens dropped more than 10% against the 1h average,
             sustained 10 minutes. Could be undelegation, a slash, or a
             watcher/RPC read error — confirm on-chain before reacting.
 
-      # NOTE: p2p peer series are absent on single-node labs (verified:
-      # cometbft v1.0.0 single validator exports no cometbft_p2p_* series),
-      # so this rule stays silent there. The metric is real on networked
-      # nodes (docs.cometbft.com metrics reference; dashboards use the
-      # same tendermint_* or cometbft_* pattern as here).
+      # NOTE: a lone CometBFT node exports no cometbft_p2p_* series at all
+      # (verified on cometbft v1.0.0), so this stays silent there. Verified
+      # firing on the two-validator simd lab: val0 at 0 peers for 10m while
+      # val1 was stopped (2026-09-29).
       - alert: CosmosPeersLow
         expr: |
           (cometbft_p2p_peers == 0)

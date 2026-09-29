@@ -145,32 +145,19 @@ func scrapeDuties(t *testing.T, d *duties) string {
 
 const vl = `module="validator",node="consensus"`
 
-func TestParseValidators(t *testing.T) {
-	got, err := ParseValidators("1, 2,1\n0X" + strings.ToUpper(pubkey0[2:]))
-	if err == nil {
+func TestParseValidator(t *testing.T) {
+	if got, err := ParseValidator("0X" + strings.ToUpper(pubkey0[2:])); err == nil {
 		t.Fatalf("0X prefix accepted: %q", got)
 	}
-	got, err = ParseValidators("1, 2,1\n0x" + strings.ToUpper(pubkey0[2:]))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(got, "|") != "1|2|"+pubkey0 {
-		t.Fatalf("got %q", got)
-	}
-	for _, bad := range []string{"-1", "0x1234", "validator-1", "0x" + strings.Repeat("g", 96)} {
-		if _, err := ParseValidators(bad); err == nil {
-			t.Errorf("%q accepted", bad)
+	for in, want := range map[string]string{"12": "12", "0x" + strings.ToUpper(pubkey0[2:]): pubkey0} {
+		if got, err := ParseValidator(in); err != nil || got != want {
+			t.Errorf("ParseValidator(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}
-	var many strings.Builder
-	for i := 0; i <= MaxValidators; i++ {
-		fmt.Fprintf(&many, "%d,", i)
-	}
-	if _, err := ParseValidators(many.String()); err == nil {
-		t.Error("more than MaxValidators accepted")
-	}
-	if got, _ := ParseValidators(""); len(got) != 0 {
-		t.Errorf("empty = %q", got)
+	for _, bad := range []string{"", "-1", "0x1234", "validator-1", "0x" + strings.Repeat("g", 96)} {
+		if _, err := ParseValidator(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -17,11 +18,16 @@ import (
 
 // runRun starts the supervised agent. SIGINT/SIGTERM stop it gracefully;
 // SIGHUP re-detects the target and reloads the Alloy pipeline.
+//
+// Both modes detect and render the pipeline locally with the same code.
+// Standalone takes the sink from flags; --enrolled takes it from
+// enrollment.json (pinned at enroll) and heartbeats the control plane,
+// which may only rename the node.
 func runRun(args []string) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	target := fs.String("target", "", "node hostname or IP to monitor (required; never defaults to localhost)")
-	remoteWriteURL := fs.String("remote-write-url", "", "ingest endpoint, e.g. https://ingest:8428/api/v1/write (required)")
-	instance := fs.String("instance", "", "instance label for all series (default: --target)")
+	remoteWriteURL := fs.String("remote-write-url", "", "ingest endpoint, e.g. https://ingest:8428/api/v1/write (required unless --enrolled)")
+	instance := fs.String("instance", "", "instance label for all series (default: --target; --enrolled uses the portal node name)")
 	exporterBin := fs.String("exporter-bin", "", "Cosmos exporter binary (resolved via PATH; default cosmos-validator-watcher). Ethereum is polled in-process")
 	alloyBin := fs.String("alloy-bin", "alloy", "Alloy binary (resolved via PATH)")
 	exporterPort := fs.Int("exporter-port", 9090, "loopback port for the Cosmos exporter on the agent host")
@@ -29,10 +35,10 @@ func runRun(args []string) int {
 	stateDir := fs.String("state-dir", ".nodebeat", "agent state dir; the only path the agent writes to")
 	metricsAddr := fs.String("metrics-addr", "127.0.0.1:19090", "localhost diagnostics address for /metrics and /manifest")
 	alloyUIAddr := fs.String("alloy-ui-addr", "127.0.0.1:12345", "localhost address for the Alloy UI")
-	ingestToken := fs.String("ingest-token", "", "Bearer token for remote-write through the auth-enforcing ingest proxy (prefer NODEBEAT_INGEST_TOKEN / NB_INGEST_TOKEN env: flags are visible in ps); empty = no auth block")
+	ingestTokenFlag := fs.String("ingest-token", "", "remote-write Bearer token, saved to <state-dir>/ingest-token (prefer NODEBEAT_INGEST_TOKEN env: flags are visible in ps); default: that file if present, else no auth")
 	disableReporting := fs.Bool("disable-reporting", true, "pass --disable-reporting to Alloy (no usage telemetry)")
-	enrolled := fs.Bool("enrolled", false, "run from enrollment.json in --state-dir (created by `enroll`); fetches the server pipeline and polls it")
-	pollInterval := fs.Duration("poll-interval", 60*time.Second, "config poll interval in enrolled mode (also the server heartbeat)")
+	enrolled := fs.Bool("enrolled", false, "take the sink from enrollment.json in --state-dir (created by `enroll`) and heartbeat the control plane")
+	pollInterval := fs.Duration("poll-interval", 60*time.Second, "heartbeat interval in enrolled mode")
 	chainFlag := fs.String("chain", "", "restrict detection to ethereum or cosmos (empty = auto; use per instance on mixed hosts)")
 	validatorsFlag := fs.String("validators", "", "validators to track duties for, comma-separated (default $NB_VALIDATORS; empty = no duty alerts): Ethereum indices or 0x pubkeys; Cosmos consensus addresses (hex or ...valcons1...)")
 	var ports detect.Ports
@@ -40,55 +46,81 @@ func runRun(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	usage := func(msg string) int {
+		fmt.Fprintln(os.Stderr, "run:", msg)
+		return 2
+	}
 	chain, err := detect.ParseChainFilter(*chainFlag)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "run:", err)
-		return 2
+		return usage(err.Error())
 	}
-	// Formats depend on the chain: checked here when it is already known
-	// (--chain), otherwise after detection (NormalizeValidators).
 	validators := agent.SplitValidators(firstNonEmpty(*validatorsFlag, os.Getenv("NB_VALIDATORS")))
-	if chain != "" {
-		if _, err := agent.NormalizeValidators(chain, validators); err != nil {
-			fmt.Fprintln(os.Stderr, "run: --validators:", err)
-			return 2
-		}
+	if *target == "" {
+		return usage("--target is required")
+	}
+	if *pollInterval <= 0 {
+		return usage("--poll-interval must be positive")
+	}
+	dir, err := filepath.Abs(*stateDir)
+	if err != nil {
+		return usage(err.Error())
+	}
+	token, err := ingestToken(*ingestTokenFlag, dir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "run:", err)
+		return 1
 	}
 
-	logger := log.New(os.Stderr, "", log.LstdFlags)
-	if *enrolled {
-		return runEnrolled(logger, enrolledOptions{
-			stateDir: *stateDir, exporterBin: *exporterBin, alloyBin: *alloyBin,
-			exporterPort: *exporterPort, exporterURL: *exporterURL,
-			metricsAddr: *metricsAddr, alloyUIAddr: *alloyUIAddr,
-			disableReporting: *disableReporting, pollInterval: *pollInterval,
-			validators: validators,
-		})
-	}
-	if *target == "" || *remoteWriteURL == "" {
-		fmt.Fprintln(os.Stderr, "run: --target and --remote-write-url are required (or use --enrolled)")
-		fs.Usage()
-		return 2
-	}
-	r := agent.New(agent.Config{
-		Target:         *target,
-		RemoteWriteURL: *remoteWriteURL,
-		Instance:       *instance,
-		// NB_INGEST_TOKEN is the systemd EnvironmentFile name: reading it
-		// from the environment keeps the secret out of argv (ps).
-		IngestToken:      firstNonEmpty(*ingestToken, os.Getenv("NODEBEAT_INGEST_TOKEN"), os.Getenv("NB_INGEST_TOKEN"), os.Getenv("NODEBEAT_TOKEN")),
+	cfg := agent.Config{
+		Target:           *target,
+		RemoteWriteURL:   *remoteWriteURL,
+		Instance:         *instance,
 		ExporterBin:      *exporterBin,
 		AlloyBin:         *alloyBin,
 		ExporterPort:     *exporterPort,
 		ExporterURL:      *exporterURL,
-		StateDir:         *stateDir,
+		StateDir:         dir,
 		MetricsAddr:      *metricsAddr,
 		AlloyUIAddr:      *alloyUIAddr,
 		DisableReporting: *disableReporting,
 		Ports:            ports,
 		Chain:            chain,
 		Validators:       validators,
-	}, logger)
+	}
+	if token != "" {
+		cfg.IngestTokenFile = enroll.TokenPath(dir)
+	}
+	var e enroll.Enrollment
+	if *enrolled {
+		if *remoteWriteURL != "" || *instance != "" {
+			return usage("--remote-write-url and --instance come from the enrollment with --enrolled")
+		}
+		if e, err = enroll.Load(dir); err != nil {
+			fmt.Fprintln(os.Stderr, "run --enrolled:", err)
+			return 1
+		}
+		if token == "" {
+			fmt.Fprintf(os.Stderr, "run --enrolled: no ingest token in %s (run `enroll` again)\n", enroll.TokenPath(dir))
+			return 1
+		}
+		cfg.RemoteWriteURL, cfg.Instance, cfg.TenantID = e.RemoteWriteURL, e.NodeName, e.TenantID
+		if cfg.Chain, err = enrolledChain(chain, e.Chain); err != nil {
+			return usage(err.Error())
+		}
+	} else if *remoteWriteURL == "" {
+		return usage("--remote-write-url is required (or use --enrolled)")
+	}
+	// Formats depend on the chain: checked here when it is already known
+	// (--chain or the enrollment), otherwise after detection
+	// (NormalizeValidators).
+	if cfg.Chain != "" {
+		if _, err := agent.NormalizeValidators(cfg.Chain, validators); err != nil {
+			return usage("--validators: " + err.Error())
+		}
+	}
+
+	logger := log.New(os.Stderr, "", log.LstdFlags)
+	r := agent.New(cfg, logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -96,7 +128,29 @@ func runRun(args []string) int {
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
 
+	if *enrolled {
+		logger.Printf("agent: enrolled as %q (tenant %s); heartbeat to %s every %s",
+			e.NodeName, e.TenantID, e.ControlPlane, *pollInterval)
+		go heartbeat(ctx, enroll.NewClient(e.ControlPlane, token), e, r, *pollInterval, logger)
+	}
 	return runWithSignals(ctx, hup, r, logger)
+}
+
+// enrolledChain is the chain an enrolled run watches: the one detected at
+// enroll, so a host serving both chains keeps the node's chain without
+// --chain. A --chain that contradicts the enrollment is an error (the
+// node's series would land under the wrong chain); enrollments written
+// before the chain was recorded fall back to flag / auto-detection.
+func enrolledChain(flagChain, enrolled string) (string, error) {
+	switch {
+	case enrolled == "":
+		return flagChain, nil
+	case flagChain == "" || flagChain == enrolled:
+		return enrolled, nil
+	default:
+		return "", fmt.Errorf("--chain %s contradicts the enrollment (chain %s); re-run `enroll --chain %s` to change it",
+			flagChain, enrolled, flagChain)
+	}
 }
 
 // runWithSignals serves SIGHUP reloads until ctx ends, then runs supervision.
@@ -121,96 +175,48 @@ func runWithSignals(ctx context.Context, hup <-chan os.Signal, r *agent.Runner, 
 	return 0
 }
 
-type enrolledOptions struct {
-	stateDir         string
-	exporterBin      string
-	alloyBin         string
-	exporterPort     int
-	exporterURL      string
-	metricsAddr      string
-	alloyUIAddr      string
-	disableReporting bool
-	pollInterval     time.Duration
-	validators       []string
-}
-
-// runEnrolled supervises from the server-rendered pipeline stored by
-// `enroll`. It fetches the config once, prepares, then polls the control
-// plane (each poll doubles as a heartbeat) and SIGHUPs Alloy on change.
-func runEnrolled(logger *log.Logger, o enrolledOptions) int {
-	e, err := enroll.Load(o.stateDir)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "run --enrolled:", err)
-		return 1
-	}
-	tok, orgID := e.DaemonToken()
-	client := enroll.NewClient(e.ControlPlane, tok, orgID)
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	exporterURL := agent.ChainMetricsURL(e.Detection.Chain, o.exporterPort, o.metricsAddr, o.exporterURL)
-	dutiesURL := agent.ChainDutiesURL(e.Detection.Chain, o.metricsAddr, o.validators)
-	fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	remote, err := client.FetchConfig(fetchCtx, e.NodeID, exporterURL, dutiesURL)
-	cancel()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "run --enrolled: fetch config:", err)
-		return 1
-	}
-
-	det := e.Detection
-	r := agent.New(agent.Config{
-		Target:           e.NodeName,
-		RemoteWriteURL:   remote.RemoteWriteURL,
-		Instance:         e.NodeName,
-		ExporterBin:      o.exporterBin,
-		AlloyBin:         o.alloyBin,
-		ExporterPort:     o.exporterPort,
-		ExporterURL:      o.exporterURL,
-		StateDir:         o.stateDir,
-		MetricsAddr:      o.metricsAddr,
-		AlloyUIAddr:      o.alloyUIAddr,
-		DisableReporting: o.disableReporting,
-		Validators:       o.validators,
-	}, logger)
-	if err := r.PrepareRemote(&det, remote.AlloyConfig); err != nil {
-		fmt.Fprintln(os.Stderr, "run --enrolled:", err)
-		return 1
-	}
-	logger.Printf("agent: enrolled as %q (tenant %s); polling %s every %s",
-		e.NodeName, e.TenantID, e.ControlPlane, o.pollInterval)
-
-	if o.pollInterval <= 0 {
-		o.pollInterval = 60 * time.Second
-	}
-	go func() {
-		t := time.NewTicker(o.pollInterval)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				pctx, pcancel := context.WithTimeout(ctx, 30*time.Second)
-				latest, err := client.FetchConfig(pctx, e.NodeID, exporterURL, dutiesURL)
-				pcancel()
-				if err != nil {
-					logger.Printf("agent: config poll failed: %v", err)
-					continue
-				}
-				if err := r.ApplyRemoteConfig(latest.AlloyConfig); err != nil {
-					logger.Printf("agent: config apply failed: %v", err)
-				}
+// heartbeat polls the control plane (which records last_seen) and applies
+// the one parameter that may change after enroll: the node name. The
+// remote-write URL is pinned at enroll and never taken from a poll.
+func heartbeat(ctx context.Context, c *enroll.Client, e enroll.Enrollment, r *agent.Runner, every time.Duration, logger *log.Logger) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	refused := "" // last refused remote-write URL, logged once
+	for {
+		pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		p, err := c.Heartbeat(pctx, e.NodeID)
+		cancel()
+		switch {
+		case err != nil:
+			logger.Printf("agent: heartbeat failed: %v", err)
+		default:
+			if p.RemoteWriteURL != "" && p.RemoteWriteURL != e.RemoteWriteURL && p.RemoteWriteURL != refused {
+				refused = p.RemoteWriteURL
+				logger.Printf("agent: control plane reports remote-write %s; keeping %s pinned at enroll (re-run enroll to change it)",
+					p.RemoteWriteURL, e.RemoteWriteURL)
+			}
+			if err := r.SetInstance(p.NodeName); err != nil {
+				logger.Printf("agent: rename to %q failed: %v", p.NodeName, err)
 			}
 		}
-	}()
-
-	if err := r.Start(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "run --enrolled:", err)
-		return 1
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
 	}
-	return 0
+}
+
+// ingestToken saves a token given by flag or env to <stateDir>/ingest-token
+// (the single copy Alloy and the heartbeat read) and returns the token in
+// that file, "" when there is none.
+func ingestToken(flagVal, stateDir string) (string, error) {
+	if t := firstNonEmpty(flagVal, os.Getenv("NODEBEAT_INGEST_TOKEN"), os.Getenv("NB_INGEST_TOKEN")); t != "" {
+		if err := enroll.SaveToken(stateDir, t); err != nil {
+			return "", err
+		}
+	}
+	return enroll.LoadToken(stateDir)
 }
 
 func firstNonEmpty(vals ...string) string {
