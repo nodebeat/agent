@@ -149,11 +149,37 @@ type Endpoint struct {
 
 // Result is the outcome of probing one target host.
 type Result struct {
-	Target    string     `json:"target"`
-	Chain     string     `json:"chain"`
-	ELClient  string     `json:"el_client,omitempty"`
-	CLClient  string     `json:"cl_client,omitempty"`
+	Target   string `json:"target"`
+	Chain    string `json:"chain"`
+	ELClient string `json:"el_client,omitempty"`
+	CLClient string `json:"cl_client,omitempty"`
+	// ELVersion/CLVersion are the raw web3_clientVersion and Beacon node
+	// version strings (CleanVersion applied), kept even when the client is
+	// not identified: they tell us which clients to support next.
+	ELVersion string     `json:"el_version,omitempty"`
+	CLVersion string     `json:"cl_version,omitempty"`
 	Endpoints []Endpoint `json:"endpoints"`
+}
+
+// MaxVersionLen caps a reported client version string.
+const MaxVersionLen = 256
+
+// CleanVersion makes a client-reported string safe to store and show: it
+// keeps printable ASCII only, trims spaces and caps the length at
+// MaxVersionLen. The agent applies it before sending and the control plane
+// again on receipt (the node is not trusted).
+func CleanVersion(v string) string {
+	b := make([]byte, 0, len(v))
+	for i := 0; i < len(v); i++ {
+		if c := v[i]; c >= 0x20 && c < 0x7f {
+			b = append(b, c)
+		}
+	}
+	out := strings.TrimSpace(string(b))
+	if len(out) > MaxVersionLen {
+		out = strings.TrimSpace(out[:MaxVersionLen])
+	}
+	return out
 }
 
 // MetricsURLs returns the endpoint URLs of the given kind.
@@ -230,6 +256,7 @@ func Detect(ctx context.Context, target string, ports Ports, chain string) (*Res
 		if getJSON(ctx, c, http.MethodPost, rpcURL, rpcBody, &el) == nil && el.Result != "" {
 			res.Chain = ChainEthereum
 			add(KindELRPC, rpcURL)
+			res.ELVersion = CleanVersion(el.Result)
 			res.ELClient = IdentifyEL(el.Result)
 			if me, ok := elMetricsEndpoints[res.ELClient]; ok {
 				if u := metrics(me, ports.ELMetrics); reachable(ctx, c, u) {
@@ -247,6 +274,7 @@ func Detect(ctx context.Context, target string, ports Ports, chain string) (*Res
 		if getJSON(ctx, c, http.MethodGet, beaconURL+"/eth/v1/node/version", "", &cl) == nil && cl.Data.Version != "" {
 			res.Chain = ChainEthereum
 			add(KindCLBeacon, beaconURL)
+			res.CLVersion = CleanVersion(cl.Data.Version)
 			res.CLClient = IdentifyCL(cl.Data.Version)
 			if me, ok := clMetricsEndpoints[res.CLClient]; ok {
 				if u := metrics(me, ports.CLMetrics); reachable(ctx, c, u) {

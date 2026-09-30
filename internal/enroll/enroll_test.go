@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -38,7 +39,7 @@ func TestActivate(t *testing.T) {
 	}, &gotAuth, &gotBody)
 
 	out, err := NewClient(srv.URL, "nb_ingest_x").Activate(context.Background(), ActivateRequest{
-		Chain: "ethereum", ELClient: "geth", Hostname: "h1",
+		Chain: "ethereum", ELClient: "geth", ELVersion: "Geth/v1.14.0", Hostname: "h1",
 		Endpoints: []detect.Endpoint{{Kind: detect.KindELRPC, URL: "http://127.0.0.1:8545"}},
 	})
 	if err != nil {
@@ -47,7 +48,7 @@ func TestActivate(t *testing.T) {
 	if gotAuth != "Bearer nb_ingest_x" {
 		t.Errorf("auth = %q, want Bearer nb_ingest_x", gotAuth)
 	}
-	for _, want := range []string{`"chain":"ethereum"`, `"hostname":"h1"`, `"kind":"el-rpc"`} {
+	for _, want := range []string{`"chain":"ethereum"`, `"hostname":"h1"`, `"kind":"el-rpc"`, `"el_version":"Geth/v1.14.0"`} {
 		if !strings.Contains(gotBody, want) {
 			t.Errorf("body %s missing %s", gotBody, want)
 		}
@@ -84,7 +85,7 @@ func TestRedirectNotFollowed(t *testing.T) {
 	defer target.Close()
 	srv := httptest.NewServer(http.RedirectHandler(target.URL+"/api/v1/nodes/n1/config", http.StatusFound))
 	defer srv.Close()
-	if _, err := NewClient(srv.URL, "tok").Heartbeat(context.Background(), "n1"); err == nil || leaked {
+	if _, err := NewClient(srv.URL, "tok").Heartbeat(context.Background(), "n1", nil); err == nil || leaked {
 		t.Errorf("redirect followed (leaked=%v, err=%v)", leaked, err)
 	}
 }
@@ -133,9 +134,30 @@ func TestLoadRejectsIncomplete(t *testing.T) {
 
 func TestHeartbeat(t *testing.T) {
 	var gotAuth string
-	srv := server(t, map[string]string{"node_id": "n1", "node_name": "renamed", "remote_write_url": "https://ingest/w"}, &gotAuth, nil)
-	p, err := NewClient(srv.URL, "tok").Heartbeat(context.Background(), "n1")
+	var gotQuery url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth, gotQuery = r.Header.Get("Authorization"), r.URL.Query()
+		_ = json.NewEncoder(w).Encode(map[string]string{"node_id": "n1", "node_name": "renamed", "remote_write_url": "https://ingest/w"})
+	}))
+	t.Cleanup(srv.Close)
+	c := NewClient(srv.URL, "tok")
+
+	p, err := c.Heartbeat(context.Background(), "n1", nil)
 	if err != nil || p.NodeName != "renamed" || gotAuth != "Bearer tok" {
 		t.Errorf("Heartbeat = %+v, %v (auth %q)", p, err, gotAuth)
+	}
+	if len(gotQuery) != 0 {
+		t.Errorf("no detection yet, but sent %v", gotQuery)
+	}
+
+	// An unidentified EL still reports its raw version, and the empty
+	// client name is sent so the server drops a stale one.
+	_, err = c.Heartbeat(context.Background(), "n1", &detect.Result{CLClient: "teku", ELVersion: "Mystery/v1 x", CLVersion: "teku/v24"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := url.Values{"el_client": {""}, "cl_client": {"teku"}, "el_version": {"Mystery/v1 x"}, "cl_version": {"teku/v24"}}
+	if gotQuery.Encode() != want.Encode() {
+		t.Errorf("query = %v, want %v", gotQuery, want)
 	}
 }

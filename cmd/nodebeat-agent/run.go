@@ -175,8 +175,9 @@ func runWithSignals(ctx context.Context, hup <-chan os.Signal, r *agent.Runner, 
 	return 0
 }
 
-// heartbeat polls the control plane (which records last_seen) and applies
-// the one parameter that may change after enroll: the node name. The
+// heartbeat polls the control plane (which records last_seen and the
+// currently detected clients) and applies the one parameter that may
+// change after enroll: the node name. The
 // remote-write URL is pinned at enroll and never taken from a poll.
 func heartbeat(ctx context.Context, c *enroll.Client, e enroll.Enrollment, r *agent.Runner, every time.Duration, logger *log.Logger) {
 	t := time.NewTicker(every)
@@ -184,7 +185,7 @@ func heartbeat(ctx context.Context, c *enroll.Client, e enroll.Enrollment, r *ag
 	refused := "" // last refused remote-write URL, logged once
 	for {
 		pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		p, err := c.Heartbeat(pctx, e.NodeID)
+		p, err := c.Heartbeat(pctx, e.NodeID, r.Detection())
 		cancel()
 		switch {
 		case err != nil:

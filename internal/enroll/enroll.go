@@ -186,6 +186,8 @@ type ActivateRequest struct {
 	Chain     string            `json:"chain"`
 	ELClient  string            `json:"el_client,omitempty"`
 	CLClient  string            `json:"cl_client,omitempty"`
+	ELVersion string            `json:"el_version,omitempty"`
+	CLVersion string            `json:"cl_version,omitempty"`
 	Endpoints []detect.Endpoint `json:"endpoints,omitempty"`
 	Hostname  string            `json:"hostname,omitempty"`
 }
@@ -222,8 +224,20 @@ func (c *Client) Activate(ctx context.Context, req ActivateRequest) (NodeParams,
 }
 
 // Heartbeat polls the node's parameters; the server records last_seen.
-func (c *Client) Heartbeat(ctx context.Context, nodeID string) (NodeParams, error) {
+// det, when known, reports the currently detected clients and their raw
+// versions (all four always sent, so the server also learns when a client
+// became unidentified); nil sends none.
+func (c *Client) Heartbeat(ctx context.Context, nodeID string, det *detect.Result) (NodeParams, error) {
+	path := "/api/v1/nodes/" + url.PathEscape(nodeID) + "/config"
+	if det != nil {
+		q := url.Values{}
+		q.Set("el_client", det.ELClient)
+		q.Set("cl_client", det.CLClient)
+		q.Set("el_version", det.ELVersion)
+		q.Set("cl_version", det.CLVersion)
+		path += "?" + q.Encode()
+	}
 	var out NodeParams
-	err := c.do(ctx, http.MethodGet, "/api/v1/nodes/"+url.PathEscape(nodeID)+"/config", nil, &out)
+	err := c.do(ctx, http.MethodGet, path, nil, &out)
 	return out, err
 }

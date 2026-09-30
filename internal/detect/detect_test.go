@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -187,6 +188,9 @@ func TestDetectFullNode(t *testing.T) {
 	if res.CLClient != "lighthouse" {
 		t.Errorf("cl_client = %q, want lighthouse", res.CLClient)
 	}
+	if res.ELVersion != "Geth/v1.14.0-stable/linux-amd64/go1.22" || res.CLVersion != "Lighthouse/v5.1.0/x86_64-linux" {
+		t.Errorf("versions = %q / %q, want the raw client strings", res.ELVersion, res.CLVersion)
+	}
 	kinds := endpointKinds(res)
 	for _, k := range []string{KindELRPC, KindELMetrics, KindCLBeacon, KindCLMetrics} {
 		if _, ok := kinds[k]; !ok {
@@ -231,9 +235,26 @@ func TestDetectUnknownClientsStillRecorded(t *testing.T) {
 	if res.CLClient != "" {
 		t.Errorf("cl_client = %q, want empty for unknown client", res.CLClient)
 	}
+	// The raw version is the demand signal for clients we do not know yet.
+	if res.CLVersion != "MysteryClient/v9.9.9" {
+		t.Errorf("cl_version = %q, want the raw version", res.CLVersion)
+	}
 	kinds := endpointKinds(res)
 	if _, ok := kinds[KindCLBeacon]; !ok {
 		t.Errorf("missing %q (have %v)", KindCLBeacon, kinds)
+	}
+}
+
+func TestCleanVersion(t *testing.T) {
+	for in, want := range map[string]string{
+		"  besu/v24.7.0/linux-x86_64 ":  "besu/v24.7.0/linux-x86_64",
+		"evil\x1b[31m\nclient\u00e9/v1": "evil[31mclient/v1",
+		strings.Repeat("a", 300):        strings.Repeat("a", MaxVersionLen),
+		"":                              "",
+	} {
+		if got := CleanVersion(in); got != want {
+			t.Errorf("CleanVersion(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

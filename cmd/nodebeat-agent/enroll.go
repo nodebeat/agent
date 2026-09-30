@@ -86,6 +86,7 @@ func runEnroll(args []string) int {
 
 	p, err := enroll.NewClient(*controlPlane, token).Activate(ctx, enroll.ActivateRequest{
 		Chain: det.Chain, ELClient: det.ELClient, CLClient: det.CLClient,
+		ELVersion: det.ELVersion, CLVersion: det.CLVersion,
 		Endpoints: det.Endpoints, Hostname: host,
 	})
 	if err != nil {

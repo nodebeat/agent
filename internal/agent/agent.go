@@ -166,14 +166,19 @@ type ScrapeJob struct {
 // Manifest states exactly what the agent collects and where it goes. It is
 // written to the state dir and served on /manifest.
 type Manifest struct {
-	AgentVersion   string    `json:"agent_version"`
-	GeneratedAt    time.Time `json:"generated_at"`
-	Target         string    `json:"target"`
-	Chain          string    `json:"chain"`
-	ELClient       string    `json:"el_client,omitempty"`
-	CLClient       string    `json:"cl_client,omitempty"`
-	RemoteWriteURL string    `json:"remote_write_url"`
-	Exporter       string    `json:"exporter"`
+	AgentVersion string    `json:"agent_version"`
+	GeneratedAt  time.Time `json:"generated_at"`
+	Target       string    `json:"target"`
+	Chain        string    `json:"chain"`
+	ELClient     string    `json:"el_client,omitempty"`
+	CLClient     string    `json:"cl_client,omitempty"`
+	// ELVersion/CLVersion are the clients' self-reported version strings.
+	// With chain and clients they are what enrolled agents report to the
+	// control plane (activation and every heartbeat).
+	ELVersion      string `json:"el_version,omitempty"`
+	CLVersion      string `json:"cl_version,omitempty"`
+	RemoteWriteURL string `json:"remote_write_url"`
+	Exporter       string `json:"exporter"`
 	// ChainAPICalls lists every request the Ethereum poller makes against
 	// the node (empty for Cosmos), including duty calls when Validators
 	// are set.
@@ -217,6 +222,14 @@ func New(cfg Config, logger *log.Logger) *Runner {
 	}
 	cfg = cfg.withDefaults()
 	return &Runner{cfg: cfg, instance: cfg.Instance, log: logger}
+}
+
+// Detection returns the current detection, or nil before Prepare. The
+// result is replaced (never mutated) on reload, so callers may read it.
+func (r *Runner) Detection() *detect.Result {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.det
 }
 
 // ChildrenStats returns supervisor stats, or nil before Start.
@@ -629,6 +642,8 @@ func buildManifest(det *detect.Result, cfg Config, instance, chainURL string, ch
 		Chain:          det.Chain,
 		ELClient:       det.ELClient,
 		CLClient:       det.CLClient,
+		ELVersion:      det.ELVersion,
+		CLVersion:      det.CLVersion,
 		RemoteWriteURL: cfg.RemoteWriteURL,
 		Exporter:       exporter,
 		ChainAPICalls:  calls,
