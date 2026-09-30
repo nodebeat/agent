@@ -274,7 +274,7 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "max by (instance) (2 * group by (instance) (ALERTS{alertstate=\"firing\",component!=\"\",severity=\"critical\"}) or 1 * group by (instance) (ALERTS{alertstate=\"firing\",component!=\"\",severity=\"warning\"}) or 0 * group by (instance) (last_over_time(up[7d])))",
+          "expr": "max by (instance) (2 * group by (instance) (ALERTS{alertstate=\"firing\",instance!=\"\",component!=\"\",severity=\"critical\"}) or 1 * group by (instance) (ALERTS{alertstate=\"firing\",instance!=\"\",component!=\"\",severity=\"warning\"}) or 0 * group by (instance) (last_over_time(up[7d])))",
           "refId": "B",
           "format": "table",
           "instant": true,
@@ -285,7 +285,7 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "max by (instance) (2 * group by (instance) (ALERTS{alertstate=\"firing\",component=\"consensus\",severity=\"critical\"}) or 1 * group by (instance) (ALERTS{alertstate=\"firing\",component=\"consensus\",severity=\"warning\"}) or 0 * group by (instance) (last_over_time(up[7d])))",
+          "expr": "max by (instance) (2 * group by (instance) (ALERTS{alertstate=\"firing\",instance!=\"\",component=\"consensus\",severity=\"critical\"}) or 1 * group by (instance) (ALERTS{alertstate=\"firing\",instance!=\"\",component=\"consensus\",severity=\"warning\"}) or 0 * group by (instance) (last_over_time(up[7d])))",
           "refId": "C",
           "format": "table",
           "instant": true,
@@ -296,7 +296,7 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "max by (instance) (2 * group by (instance) (ALERTS{alertstate=\"firing\",component=\"rpc\",severity=\"critical\"}) or 1 * group by (instance) (ALERTS{alertstate=\"firing\",component=\"rpc\",severity=\"warning\"}) or 0 * group by (instance) (last_over_time(up[7d])))",
+          "expr": "max by (instance) (2 * group by (instance) (ALERTS{alertstate=\"firing\",instance!=\"\",component=\"rpc\",severity=\"critical\"}) or 1 * group by (instance) (ALERTS{alertstate=\"firing\",instance!=\"\",component=\"rpc\",severity=\"warning\"}) or 0 * group by (instance) (last_over_time(up[7d])))",
           "refId": "D",
           "format": "table",
           "instant": true,
@@ -307,7 +307,7 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "max by (instance) (2 * group by (instance) (ALERTS{alertstate=\"firing\",component=\"infra\",severity=\"critical\"}) or 1 * group by (instance) (ALERTS{alertstate=\"firing\",component=\"infra\",severity=\"warning\"}) or 0 * group by (instance) (last_over_time(up[7d])))",
+          "expr": "max by (instance) (2 * group by (instance) (ALERTS{alertstate=\"firing\",instance!=\"\",component=\"infra\",severity=\"critical\"}) or 1 * group by (instance) (ALERTS{alertstate=\"firing\",instance!=\"\",component=\"infra\",severity=\"warning\"}) or 0 * group by (instance) (last_over_time(up[7d])))",
           "refId": "E",
           "format": "table",
           "instant": true,
