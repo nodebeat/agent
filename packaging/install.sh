@@ -15,7 +15,8 @@
 #      runs the unit in --enrolled mode.
 #
 # SaaS (portal Add Node shows the token once):
-#   NODEBEAT_INGEST_TOKEN=... sudo -E packaging/install.sh --bin ./nodebeat-agent \
+#   NODEBEAT_INGEST_TOKEN=... sudo --preserve-env=NODEBEAT_INGEST_TOKEN packaging/install.sh \
+#     --bin ./nodebeat-agent \
 #     --target 127.0.0.1 --control-plane https://app.nodebeat.stream
 # Standalone (any Prometheus remote-write endpoint, token optional):
 #   sudo packaging/install.sh --bin ./nodebeat-agent --target 127.0.0.1 \
@@ -38,8 +39,9 @@
 #
 # The ingest token is stored once, in /var/lib/nodebeat/ingest-token (0600,
 # user nodebeat); agent.env holds no secret. Pass it via
-# NODEBEAT_INGEST_TOKEN with sudo -E; --ingest-token works but leaks into
-# shell history and the process list.
+# NODEBEAT_INGEST_TOKEN with sudo --preserve-env=NODEBEAT_INGEST_TOKEN (not `sudo -E`: sudo-rs,
+# the default sudo on Ubuntu 26.04+, ignores it); --ingest-token works but
+# leaks into shell history and the process list.
 #
 # Installs: agent -> /usr/local/bin, children -> /usr/local/lib/nodebeat/bin,
 # unit -> /etc/systemd/system, env -> /etc/nodebeat/agent.env (0640),
@@ -110,7 +112,7 @@ if [ -n "$CONTROL_PLANE" ]; then
     die "--remote-write-url and --instance come from the portal with --control-plane; drop them"
   # Re-enrolling may reuse the stored token.
   [ -n "$INGEST_TOKEN" ] || [ -f "$STATE/ingest-token" ] ||
-    die "--control-plane needs the node ingest token (NODEBEAT_INGEST_TOKEN env with sudo -E; shown once at Add Node)"
+    die "--control-plane needs the node ingest token (NODEBEAT_INGEST_TOKEN env with sudo --preserve-env=NODEBEAT_INGEST_TOKEN; shown once at Add Node)"
 else
   ENROLLED=false
   [ -n "$RW_URL" ] || die "--remote-write-url is required (or --control-plane for SaaS)"
@@ -126,7 +128,7 @@ done
 VALIDATORS="$(printf '%s' "$VALIDATORS" | tr -s ' \t\n' ',' | sed 's/^,//; s/,$//')"
 case "$VALIDATORS" in *[!0-9a-zA-Z,]*) die "--validators: comma-separated indices, 0x pubkeys or consensus addresses only" ;; esac
 [ "$INGEST_TOKEN_FROM_FLAG" = 0 ] ||
-  echo "warning: --ingest-token exposes the secret in the process list and shell history; prefer NODEBEAT_INGEST_TOKEN env with sudo -E" >&2
+  echo "warning: --ingest-token exposes the secret in the process list and shell history; prefer NODEBEAT_INGEST_TOKEN env with sudo --preserve-env=NODEBEAT_INGEST_TOKEN" >&2
 command -v systemctl >/dev/null || die "systemd not found" 1
 
 # Platform: picks the pinned Alloy build and catches an archive for the

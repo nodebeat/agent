@@ -59,7 +59,7 @@ groups:
         annotations:
           summary: "Agent cannot reach the beacon node ({{ $labels.instance }})"
           description: >-
-            The agent's last Beacon API poll (every 2s, 2s timeout) failed:
+            The agent's last Beacon API poll (every 1s, 2s timeout) failed:
             beacon node down, hung, wrong URL, or the path from the agent is
             blocked. A validator client using this beacon node cannot attest
             or propose until it answers again.
@@ -74,7 +74,7 @@ groups:
         annotations:
           summary: "Agent cannot reach the execution client ({{ $labels.instance }})"
           description: >-
-            The agent's last JSON-RPC poll (every 2s, 2s timeout) failed:
+            The agent's last JSON-RPC poll (every 1s, 2s timeout) failed:
             execution client down, hung, or its RPC port blocked. The beacon
             node cannot build or verify payloads, and RPC users get errors.
 
