@@ -40,6 +40,10 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Build the tag that triggered this run. Left to itself goreleaser
+          # picks the highest tag on HEAD, and v0.1.0-rc.3 sorts above v0.1.0
+          # on the same commit (v0.1.0 then built and uploaded as rc.3).
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
       - uses: actions/attest-build-provenance@v2
         with:
           subject-path: |
