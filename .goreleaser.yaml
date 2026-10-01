@@ -76,6 +76,9 @@ sboms:
 signs:
   - id: checksums
     cmd: cosign
+    # A cosign bundle (signature + Fulcio cert + Rekor entry), not a bare
+    # .sig: published as <checksums>.bundle, the name docs/USER_GUIDE.md uses.
+    signature: "${artifact}.bundle"
     args:
       - sign-blob
       - "--bundle=${signature}"
