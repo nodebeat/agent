@@ -60,6 +60,11 @@ archives:
         dst: THIRD_PARTY/cosmos-validator-watcher
         strip_parent: true
 
+release:
+  # v0.2.0-rc.1 and the like publish as pre-releases, so releases/latest
+  # (what a fresh install picks up) only ever points at a final version.
+  prerelease: auto
+
 checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
   algorithm: sha256
