@@ -32,7 +32,8 @@
     "list": [
       {
         "name": "instance",
-        "label": "Node",
+        "label": "Cosmos node",
+        "description": "Cosmos nodes in this organization. Ethereum nodes have their own dashboard: open them from Fleet.",
         "type": "query",
         "datasource": {
           "type": "prometheus",
@@ -45,7 +46,7 @@
         },
         "includeAll": false,
         "multi": false,
-        "refresh": 2,
+        "refresh": 1,
         "sort": 1,
         "current": {}
       }

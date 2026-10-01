@@ -380,8 +380,11 @@
           }
         },
         {
-          "id": "merge",
-          "options": {}
+          "id": "joinByField",
+          "options": {
+            "byField": "instance",
+            "mode": "outer"
+          }
         },
         {
           "id": "organize",
@@ -449,7 +452,7 @@
                 "value": [
                   {
                     "title": "Open node detail",
-                    "url": "/d/nodebeat-node-${__data.fields.Chain}/node?${__url_time_range}&var-instance=${__value.raw}"
+                    "url": "/d/nodebeat-node-${__data.fields.Chain}/nodebeat-node3a-${__data.fields.Chain}?${__url_time_range}&var-instance=${__value.raw}"
                   }
                 ]
               }

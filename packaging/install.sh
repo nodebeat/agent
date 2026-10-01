@@ -10,9 +10,10 @@
 #      takes the Cosmos watcher shipped next to --bin, and copies both to
 #      /usr/local/lib/nodebeat/bin, the only place the unit may execute
 #      children from,
-#   3. installs the agent binary, unit and env file,
-#   4. with --control-plane: activates the node (nodebeat-agent enroll) and
-#      runs the unit in --enrolled mode.
+#   3. installs the agent binary,
+#   4. with --control-plane: activates the node (nodebeat-agent enroll),
+#      which picks the agent instance (below), and runs it in --enrolled mode,
+#   5. installs the instance's unit and env file and (re)starts it.
 #
 # SaaS (portal Add Node shows the token once):
 #   NODEBEAT_INGEST_TOKEN=... sudo --preserve-env=NODEBEAT_INGEST_TOKEN packaging/install.sh \
@@ -23,7 +24,7 @@
 #     --remote-write-url https://ingest.example/api/v1/write [--instance NAME]
 #
 # Other flags: [--chain ethereum|cosmos] [--validators 12345,0xa1b2...]
-#   [--alloy-bin PATH] [--watcher-bin PATH] [--skip-checks] [--dry-run]
+#   [--node NAME] [--alloy-bin PATH] [--watcher-bin PATH] [--skip-checks] [--dry-run]
 #   [--el-rpc-port 8545 ...] (all detect port flags; devnet ephemeral ports)
 #
 # --dry-run prints every change (the pre-flight still runs; it is read-only)
@@ -37,6 +38,18 @@
 # pubkeys. Cosmos: consensus addresses, hex or bech32 ...valcons1.... Public
 # chain identifiers only, written to agent.env as NB_VALIDATORS.
 #
+# One agent per node: a host running several nodes (say an Ethereum and a
+# Cosmos validator) runs this once per node, each time with that node's
+# token and usually --chain. The first agent is the `nodebeat-agent` unit;
+# each further node gets `nodebeat-agent@NAME`, NAME derived from the node's
+# portal name, with its own env file, state dir and loopback ports
+# (exporter 9090+k, diagnostics 19090+k, Alloy UI 12345+k). An agent belongs
+# to the node id it enrolled as: re-running with the same node's token
+# updates that agent, even after a rename in the portal. A re-run without a
+# token reuses the stored one; with several agents, pick one with --node
+# (agent or node name). Upgrading the binary restarts every agent.
+# (--instance is unrelated: the standalone mode's metrics instance label.)
+#
 # The ingest token is stored once, in /var/lib/nodebeat/ingest-token (0600,
 # user nodebeat); agent.env holds no secret. Pass it via
 # NODEBEAT_INGEST_TOKEN with sudo --preserve-env=NODEBEAT_INGEST_TOKEN (not `sudo -E`: sudo-rs,
@@ -45,14 +58,15 @@
 #
 # Installs: agent -> /usr/local/bin, children -> /usr/local/lib/nodebeat/bin,
 # unit -> /etc/systemd/system, env -> /etc/nodebeat/agent.env (0640),
-# state -> /var/lib/nodebeat, user `nodebeat`. Re-runnable.
+# state -> /var/lib/nodebeat, user `nodebeat` (further agents:
+# nodebeat-agent@.service, /etc/nodebeat/agent-NAME.env,
+# /var/lib/nodebeat-NAME). Re-runnable.
 set -euo pipefail
 
 ALLOY_MIN=1.19.0 # oldest Alloy (--alloy-bin) this agent's generated config is tested with
-STATE=/var/lib/nodebeat
 LIB=/usr/local/lib/nodebeat/bin
 
-BIN=""; TARGET=""; RW_URL=""; INSTANCE=""; CONTROL_PLANE=""; CHAIN=""; VALIDATORS=""
+BIN=""; TARGET=""; RW_URL=""; INSTANCE=""; CONTROL_PLANE=""; CHAIN=""; VALIDATORS=""; NODE=""
 INGEST_TOKEN="${NODEBEAT_INGEST_TOKEN:-}"; INGEST_TOKEN_FROM_FLAG=0
 ALLOY_BIN=""; WATCHER_BIN=""; SKIP_CHECKS=0; DRY_RUN=0
 EL_RPC_PORT=8545; BEACON_PORT=5052; EL_METRICS_PORT=0; CL_METRICS_PORT=0
@@ -68,6 +82,7 @@ while [ $# -gt 0 ]; do
     --control-plane) CONTROL_PLANE="$2"; shift 2 ;;
     --chain) CHAIN="$2"; shift 2 ;;
     --validators) VALIDATORS="$2"; shift 2 ;;
+    --node) NODE="$2"; shift 2 ;;
     --alloy-bin) ALLOY_BIN="$2"; shift 2 ;;
     --watcher-bin) WATCHER_BIN="$2"; shift 2 ;;
     --skip-checks) SKIP_CHECKS=1; shift ;;
@@ -101,6 +116,85 @@ write_file() {
 # One token per value: everything below lands in an EnvironmentFile or argv.
 single_word() { case "$2" in *[[:space:]]*) die "$1 must not contain whitespace" ;; esac; }
 
+# Agent instances (see the header). "default" is the plain nodebeat-agent
+# unit; its paths predate instances and never change.
+inst_env() { if [ "$1" = default ]; then echo /etc/nodebeat/agent.env; else echo "/etc/nodebeat/agent-$1.env"; fi; }
+inst_state() { if [ "$1" = default ]; then echo /var/lib/nodebeat; else echo "/var/lib/nodebeat-$1"; fi; }
+inst_unit() { if [ "$1" = default ]; then echo nodebeat-agent; else echo "nodebeat-agent@$1"; fi; }
+# Installed instances, one per line; an env file marks one.
+list_instances() {
+  [ ! -f /etc/nodebeat/agent.env ] || echo default
+  local f
+  for f in /etc/nodebeat/agent-*.env; do
+    [ -f "$f" ] || continue
+    f="${f#/etc/nodebeat/agent-}"; echo "${f%.env}"
+  done
+}
+# enrolled_field INSTANCE KEY: a string field of the instance's
+# enrollment.json (written by MarshalIndent: one key per line); "" if none.
+enrolled_field() {
+  sed -n "s/^  \"$2\": \"\(.*\)\",\{0,1\}\$/\1/p" "$(inst_state "$1")/enrollment.json" 2>/dev/null || true
+}
+describe_instances() {
+  local i
+  for i in $(list_instances); do
+    echo "  $(inst_unit "$i")  node $(enrolled_field "$i" node_name || true)" >&2
+  done
+}
+# instance_of_node ID: the instance enrolled as that node id, if any.
+instance_of_node() {
+  local i
+  for i in $(list_instances); do
+    [ "$(enrolled_field "$i" node_id)" != "$1" ] || { echo "$i"; return 0; }
+  done
+  return 1
+}
+# new_instance_name NODE_NAME NODE_ID: a unit-safe name for a node's new
+# instance ([a-z0-9-], at most 40 chars), the node id's prefix appended when
+# another instance already holds the name.
+new_instance_name() {
+  local n
+  n="$(printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C sed 's/[^a-z0-9]\{1,\}/-/g; s/^-//' | cut -c1-40)"
+  n="${n%-}"
+  [ -n "$n" ] && [ "$n" != default ] || n=node
+  if [ -e "$(inst_env "$n")" ] || [ -e "$(inst_state "$n")" ]; then n="$n-${2:0:8}"; fi
+  echo "$n"
+}
+# pick_ports: loopback ports for a new instance, offset k >= 1 from the
+# default instance's (9090, 19090, 12345), skipping offsets other instances
+# hold and ports something already listens on.
+pick_ports() {
+  local i p k used=" 0 "
+  for i in $(list_instances); do
+    [ "$i" != default ] || continue
+    p="$(sed -n 's/^NB_METRICS_ADDR=.*://p' "$(inst_env "$i")")"
+    [ -z "$p" ] || used="$used$((p - 19090)) "
+  done
+  for k in $(seq 1 99); do
+    case "$used" in *" $k "*) continue ;; esac
+    if command -v ss >/dev/null &&
+      ss -Hltn "( sport = :$((9090 + k)) or sport = :$((19090 + k)) or sport = :$((12345 + k)) )" | grep -q .; then
+      continue
+    fi
+    EXPORTER_PORT=$((9090 + k)); METRICS_PORT=$((19090 + k)); ALLOY_UI_PORT=$((12345 + k))
+    return 0
+  done
+  die "no free loopback ports for another agent" 1
+}
+# use_instance NAME: point STATE/ENV_FILE/UNIT (and the ports) at it.
+use_instance() {
+  AI="$1"; STATE="$(inst_state "$AI")"; ENV_FILE="$(inst_env "$AI")"; UNIT="$(inst_unit "$AI")"
+  EXPORTER_PORT=9090; METRICS_PORT=19090; ALLOY_UI_PORT=12345
+  [ "$AI" != default ] || return 0
+  if [ -f "$ENV_FILE" ]; then
+    EXPORTER_PORT="$(sed -n 's/^NB_EXPORTER_PORT=//p' "$ENV_FILE")"
+    METRICS_PORT="$(sed -n 's/^NB_METRICS_ADDR=.*://p' "$ENV_FILE")"
+    ALLOY_UI_PORT="$(sed -n 's/^NB_ALLOY_UI_ADDR=.*://p' "$ENV_FILE")"
+  else
+    pick_ports
+  fi
+}
+
 # --- 1. Validate ---------------------------------------------------------
 [ "$DRY_RUN" = 1 ] || [ "$(id -u)" = 0 ] || die "run as root (or with --dry-run)" 1
 [ -n "$BIN" ] && [ -f "$BIN" ] || die "--bin <agent binary> is required"
@@ -110,12 +204,10 @@ if [ -n "$CONTROL_PLANE" ]; then
   ENROLLED=true
   [ -z "$RW_URL" ] && [ -z "$INSTANCE" ] ||
     die "--remote-write-url and --instance come from the portal with --control-plane; drop them"
-  # Re-enrolling may reuse the stored token.
-  [ -n "$INGEST_TOKEN" ] || [ -f "$STATE/ingest-token" ] ||
-    die "--control-plane needs the node ingest token (NODEBEAT_INGEST_TOKEN env with sudo --preserve-env=NODEBEAT_INGEST_TOKEN; shown once at Add Node)"
 else
   ENROLLED=false
   [ -n "$RW_URL" ] || die "--remote-write-url is required (or --control-plane for SaaS)"
+  [ -z "$NODE" ] || die "--node selects an enrolled agent; standalone installs have one"
 fi
 single_word --target "$TARGET"; single_word --remote-write-url "$RW_URL"; single_word --instance "$INSTANCE"
 single_word --control-plane "$CONTROL_PLANE"; single_word "the ingest token" "$INGEST_TOKEN"
@@ -130,6 +222,33 @@ case "$VALIDATORS" in *[!0-9a-zA-Z,]*) die "--validators: comma-separated indice
 [ "$INGEST_TOKEN_FROM_FLAG" = 0 ] ||
   echo "warning: --ingest-token exposes the secret in the process list and shell history; prefer NODEBEAT_INGEST_TOKEN env with sudo --preserve-env=NODEBEAT_INGEST_TOKEN" >&2
 command -v systemctl >/dev/null || die "systemd not found" 1
+
+# Which agent this run installs. With a token, the node it activates decides
+# (step 5); without one, decide now, before any download.
+AI=""
+if [ "$ENROLLED" = false ]; then
+  use_instance default
+elif [ -n "$INGEST_TOKEN" ]; then
+  [ -z "$NODE" ] || die "--node is for re-runs without a token (the token already names the node); drop it"
+else
+  ENROLLED_AGENTS=()
+  for i in $(list_instances); do
+    [ -z "$(enrolled_field "$i" node_id)" ] || ENROLLED_AGENTS+=("$i")
+  done
+  if [ -n "$NODE" ]; then
+    for i in "${ENROLLED_AGENTS[@]}"; do
+      if [ "$i" = "$NODE" ] || [ "$(enrolled_field "$i" node_name)" = "$NODE" ]; then use_instance "$i"; break; fi
+    done
+    [ -n "$AI" ] || { echo "install: no enrolled agent for --node $NODE on this host; installed:" >&2; describe_instances; exit 2; }
+  elif [ "${#ENROLLED_AGENTS[@]}" = 1 ]; then
+    use_instance "${ENROLLED_AGENTS[0]}"
+  elif [ "${#ENROLLED_AGENTS[@]}" -gt 1 ]; then
+    echo "install: ${#ENROLLED_AGENTS[@]} agents on this host; pass the node's token, or --node NAME to re-run one with its stored token:" >&2
+    describe_instances; exit 2
+  fi
+  [ -n "$AI" ] && [ -f "$STATE/ingest-token" ] ||
+    die "--control-plane needs the node ingest token (NODEBEAT_INGEST_TOKEN env with sudo --preserve-env=NODEBEAT_INGEST_TOKEN; shown once at Add Node)"
+fi
 
 # Platform: picks the pinned Alloy build and catches an archive for the
 # wrong CPU before anything is installed.
@@ -209,13 +328,14 @@ else
 fi
 
 # --- 3. Fetch Alloy ---------------------------------------------------------
+FETCH_DIR=""; ENROLL_DIR=""
+trap 'rm -rf ${FETCH_DIR:+"$FETCH_DIR"} ${ENROLL_DIR:+"$ENROLL_DIR"}' EXIT
 # Unpacked on disk, not in /tmp (often a small tmpfs): the binary is ~550 MB.
 if [ "$ALLOY_FETCH" = 1 ] && [ "$DRY_RUN" = 1 ]; then
   echo "+ download $ALLOY_URL (archive sha256 $ALLOY_ZIP_SHA, binary sha256 $ALLOY_BIN_SHA)"
   ALLOY_BIN="<downloaded alloy>"
 elif [ "$ALLOY_FETCH" = 1 ]; then
   FETCH_DIR="$(mktemp -d /var/tmp/nodebeat-alloy.XXXXXX)"
-  trap 'rm -rf "$FETCH_DIR"' EXIT
   echo "downloading alloy $ALLOY_PIN for $ARCH (~150 MB)"
   for i in 1 2 3 4 5; do
     # -C -: a dropped connection resumes instead of starting over.
@@ -241,19 +361,93 @@ with zipfile.ZipFile(sys.argv[1]) as z, z.open(sys.argv[2]) as src, open(sys.arg
   echo "alloy $ALLOY_PIN downloaded, sha256 verified"
 fi
 
-# --- 4. Install -----------------------------------------------------------
+# --- 4. Install binaries --------------------------------------------------
+# A new agent or Alloy binary restarts the host's other agents too (step 6):
+# they share both.
+SHARED_CHANGED=0
+cmp -s "$BIN" /usr/local/bin/nodebeat-agent 2>/dev/null || SHARED_CHANGED=1
+[ "$ALLOY_BIN" -ef "$LIB/alloy" ] || SHARED_CHANGED=1
 id nodebeat >/dev/null 2>&1 || run useradd --system --no-create-home --shell /usr/sbin/nologin nodebeat
 run install -m 0755 "$BIN" /usr/local/bin/nodebeat-agent
 run install -d -m 0755 "$LIB"
 [ "$ALLOY_BIN" -ef "$LIB/alloy" ] || run install -m 0755 "$ALLOY_BIN" "$LIB/alloy"
 [ -z "$WATCHER_BIN" ] || [ "$WATCHER_BIN" -ef "$LIB/cosmos-validator-watcher" ] ||
   run install -m 0755 "$WATCHER_BIN" "$LIB/cosmos-validator-watcher"
-run install -m 0644 "$HERE/systemd/nodebeat-agent.service" /etc/systemd/system/nodebeat-agent.service
-# Earlier versions switched modes with a drop-in; the unit now reads NB_ENROLLED.
-[ ! -e /etc/systemd/system/nodebeat-agent.service.d ] || run rm -rf /etc/systemd/system/nodebeat-agent.service.d
 run install -d -m 0750 -o root -g nodebeat /etc/nodebeat
+
+# --- 5. Activation (picks the agent) ---------------------------------------
+# enroll saves the token to <state>/ingest-token and the node's parameters
+# (incl. the pinned remote-write URL and the node id) to
+# <state>/enrollment.json. The token travels by exported env, never argv.
+enroll_into() {
+  echo "+ nodebeat-agent enroll --control-plane $CONTROL_PLANE --target $TARGET --state-dir $1 ${CHAIN_FLAGS[*]} ${PORT_FLAGS[*]} (token via env)"
+  [ "$DRY_RUN" = 0 ] || return 0
+  NODEBEAT_INGEST_TOKEN="$INGEST_TOKEN" sudo --preserve-env=NODEBEAT_INGEST_TOKEN -u nodebeat \
+    /usr/local/bin/nodebeat-agent enroll --control-plane "$CONTROL_PLANE" \
+    --target "$TARGET" --state-dir "$1" "${CHAIN_FLAGS[@]}" "${PORT_FLAGS[@]}"
+}
+if [ "$ENROLLED" = true ] && [ -n "$AI" ]; then
+  # Re-run without a token: enroll reuses the agent's stored one.
+  enroll_into "$STATE"
+elif [ "$ENROLLED" = true ]; then
+  # Activate into a scratch dir first: the node it answers for picks the
+  # agent (the one enrolled as that node id; else the default slot when
+  # free or standalone; else a new nodebeat-agent@NAME).
+  if [ "$DRY_RUN" = 1 ]; then
+    enroll_into "<scratch dir>"
+    if [ -z "$(list_instances)" ]; then use_instance default; else
+      echo "dry run: the agent is picked from the activated node; shown as nodebeat-agent@NODE"
+      use_instance NODE
+    fi
+  else
+    ENROLL_DIR="$(mktemp -d /var/lib/.nodebeat-enroll.XXXXXX)"
+    chown nodebeat:nodebeat "$ENROLL_DIR"
+    enroll_into "$ENROLL_DIR"
+    NODE_ID="$(sed -n 's/^  "node_id": "\(.*\)",\{0,1\}$/\1/p' "$ENROLL_DIR/enrollment.json")"
+    NODE_NAME="$(sed -n 's/^  "node_name": "\(.*\)",\{0,1\}$/\1/p' "$ENROLL_DIR/enrollment.json")"
+    [ -n "$NODE_ID" ] || die "enroll wrote no node id to $ENROLL_DIR/enrollment.json" 1
+    if PICK="$(instance_of_node "$NODE_ID")"; then
+      echo "node \"$NODE_NAME\" already runs as $(inst_unit "$PICK"): updating it"
+    elif [ ! -f /etc/nodebeat/agent.env ] || [ -z "$(enrolled_field default node_id)" ]; then
+      PICK=default
+      [ ! -f /etc/nodebeat/agent.env ] || echo "replacing the standalone agent with node \"$NODE_NAME\""
+    else
+      PICK="$(new_instance_name "$NODE_NAME" "$NODE_ID")"
+      echo "node \"$NODE_NAME\" is new on this host: installing it as a second agent, $(inst_unit "$PICK"), next to:"
+      describe_instances 2>&1
+    fi
+    use_instance "$PICK"
+    install -d -m 0750 -o nodebeat -g nodebeat "$STATE"
+    mv -f "$ENROLL_DIR/ingest-token" "$ENROLL_DIR/enrollment.json" "$STATE/"
+  fi
+fi
+
+# --- 6. Unit, env, start ---------------------------------------------------
+if [ "$AI" = default ]; then
+  run install -m 0644 "$HERE/systemd/nodebeat-agent.service" /etc/systemd/system/nodebeat-agent.service
+  # Earlier versions switched modes with a drop-in; the unit now reads NB_ENROLLED.
+  [ ! -e /etc/systemd/system/nodebeat-agent.service.d ] || run rm -rf /etc/systemd/system/nodebeat-agent.service.d
+  LISTEN_ENV=""
+else
+  # Further agents: a template rendered from the same unit (one hardening
+  # block), with per-instance paths and the instance's loopback ports.
+  TEMPLATE="$(sed -e 's#^Description=.*#& [%i]#' \
+    -e 's#/etc/nodebeat/agent\.env#/etc/nodebeat/agent-%i.env#g' \
+    -e 's#/var/lib/nodebeat\([^-]\|$\)#/var/lib/nodebeat-%i\1#g' \
+    -e 's#^StateDirectory=nodebeat$#StateDirectory=nodebeat-%i#' \
+    -e 's#^  --state-dir #  --exporter-port ${NB_EXPORTER_PORT} --metrics-addr ${NB_METRICS_ADDR} --alloy-ui-addr ${NB_ALLOY_UI_ADDR} \\\n&#' \
+    "$HERE/systemd/nodebeat-agent.service")"
+  for want in 'EnvironmentFile=/etc/nodebeat/agent-%i.env' 'StateDirectory=nodebeat-%i' '--state-dir /var/lib/nodebeat-%i' '--metrics-addr ${NB_METRICS_ADDR}'; do
+    grep -qF -- "$want" <<<"$TEMPLATE" || die "rendering nodebeat-agent@.service: '$want' missing (unit changed?)" 1
+  done
+  write_file /etc/systemd/system/nodebeat-agent@.service 0644 root:root "$TEMPLATE"
+  LISTEN_ENV="
+NB_EXPORTER_PORT=$EXPORTER_PORT
+NB_METRICS_ADDR=127.0.0.1:$METRICS_PORT
+NB_ALLOY_UI_ADDR=127.0.0.1:$ALLOY_UI_PORT"
+fi
 run install -d -m 0750 -o nodebeat -g nodebeat "$STATE"
-write_file /etc/nodebeat/agent.env 0640 root:nodebeat "# Written by packaging/install.sh. No secrets: the token is in $STATE/ingest-token.
+write_file "$ENV_FILE" 0640 root:nodebeat "# Written by packaging/install.sh. No secrets: the token is in $STATE/ingest-token.
 NB_ENROLLED=$ENROLLED
 NB_TARGET=$TARGET
 NB_REMOTE_WRITE_URL=$RW_URL
@@ -269,36 +463,30 @@ NB_CL_P2P_PORT=$CL_P2P_PORT
 NB_COSMOS_RPC_PORT=$COSMOS_RPC_PORT
 NB_COSMOS_REST_PORT=$COSMOS_REST_PORT
 NB_COSMOS_METRICS_PORT=$COSMOS_METRICS_PORT
-NB_COSMOS_P2P_PORT=$COSMOS_P2P_PORT"
-
-# --- 5. Token + activation ------------------------------------------------
-if [ "$ENROLLED" = true ]; then
-  # enroll saves the token to $STATE/ingest-token and the node's parameters
-  # (incl. the pinned remote-write URL) to $STATE/enrollment.json. The token
-  # travels by exported env, never argv.
-  # Without a new token, enroll reuses the stored one.
-  echo "+ nodebeat-agent enroll --control-plane $CONTROL_PLANE --target $TARGET --state-dir $STATE ${CHAIN_FLAGS[*]} ${PORT_FLAGS[*]} (token via env)"
-  if [ "$DRY_RUN" = 0 ]; then
-    NODEBEAT_INGEST_TOKEN="$INGEST_TOKEN" sudo --preserve-env=NODEBEAT_INGEST_TOKEN -u nodebeat \
-      /usr/local/bin/nodebeat-agent enroll --control-plane "$CONTROL_PLANE" \
-      --target "$TARGET" --state-dir "$STATE" "${CHAIN_FLAGS[@]}" "${PORT_FLAGS[@]}"
+NB_COSMOS_P2P_PORT=$COSMOS_P2P_PORT$LISTEN_ENV"
+if [ "$ENROLLED" = false ]; then
+  if [ -n "$INGEST_TOKEN" ]; then
+    write_file "$STATE/ingest-token" 0600 nodebeat:nodebeat "$INGEST_TOKEN" redact
+  else
+    run rm -f "$STATE/ingest-token" "$STATE/enrollment.json"
   fi
-elif [ -n "$INGEST_TOKEN" ]; then
-  write_file "$STATE/ingest-token" 0600 nodebeat:nodebeat "$INGEST_TOKEN" redact
-else
-  run rm -f "$STATE/ingest-token" "$STATE/enrollment.json"
 fi
 
 run systemctl daemon-reload
-run systemctl enable nodebeat-agent
+run systemctl enable "$UNIT"
 # restart (not start): re-running install must recycle a running unit.
-run systemctl restart nodebeat-agent
+run systemctl restart "$UNIT"
+if [ "$SHARED_CHANGED" = 1 ]; then
+  for i in $(list_instances); do
+    [ "$i" = "$AI" ] || run systemctl try-restart "$(inst_unit "$i")"
+  done
+fi
 if [ "$DRY_RUN" = 1 ]; then
   echo "dry run: nothing changed"
   exit 0
 fi
 sleep 3
-systemctl --no-pager --lines=5 status nodebeat-agent || true
+systemctl --no-pager --lines=5 status "$UNIT" || true
 echo
-echo "installed ($([ "$ENROLLED" = true ] && echo enrolled || echo standalone)). Data manifest: $STATE/manifest.json"
-echo "(also served at http://127.0.0.1:19090/manifest on the host)"
+echo "installed $UNIT ($([ "$ENROLLED" = true ] && echo enrolled || echo standalone)). Data manifest: $STATE/manifest.json"
+echo "(also served at http://127.0.0.1:$METRICS_PORT/manifest on the host)"

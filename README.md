@@ -37,9 +37,9 @@ Binaries: `nodebeat-agent` (supervisor) and `nodebeat-onboard` (pre-flight check
 * **Releases:** signed with cosign (keyless Sigstore), checksums + SBOM + SLSA provenance via GoReleaser. See `.goreleaser.yaml`.
 * **Third-party binaries:** each release archive ships our portable build of `cosmos-validator-watcher` (MIT, `scripts/release/build-watcher.sh`). Alloy is not shipped: `packaging/install.sh` downloads the version pinned in `packaging/deps.lock` and checks the SHA-256 of both the archive and the binary, so the signed release fixes exactly which Alloy runs.
 * **Worst case of compromise:** metrics leak only. See `docs/THREAT_MODEL.md`.
-* **Uninstall:** `sudo packaging/uninstall.sh` removes binaries, systemd unit, env, state dir and user — nothing left.
+* **Uninstall:** `sudo packaging/uninstall.sh --all` removes binaries, systemd units, env, state dirs and user — nothing left (`--node NAME` removes one agent).
 
-One agent run monitors one chain. An Ethereum EL+CL pair counts as one chain (one poller reads both). For two different chains on one host (e.g. Ethereum + Cosmos), run twice with disjoint `--state-dir`, `--exporter-port`, `--metrics-addr`, and `--alloy-ui-addr`, plus `--chain ethereum` / `--chain cosmos` per instance (empty = auto-detect all families, which misattributes mixed hosts — Ethereum wins and Cosmos duties are missed).
+One agent run monitors one chain. An Ethereum EL+CL pair counts as one chain (one poller reads both). For two different chains on one host (e.g. Ethereum + Cosmos), pass `--chain ethereum` / `--chain cosmos` per agent (empty = auto-detect all families, which misattributes mixed hosts — Ethereum wins and Cosmos duties are missed). Enrolled installs: run `packaging/install.sh` once per node with its token; each further node gets its own `nodebeat-agent@NAME` unit, state dir and ports. By hand: disjoint `--state-dir`, `--exporter-port`, `--metrics-addr` and `--alloy-ui-addr`.
 
 ## Layout
 

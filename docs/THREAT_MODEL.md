@@ -38,4 +38,4 @@ An attacker who controls the NodeBeat control plane (or can forge its responses)
 * Check the listeners yourself (`ss -tlnp`): everything the agent runs is on 127.0.0.1 (`docs/USER_GUIDE.md`, "Listening ports").
 * Optionally restrict egress (samples in `packaging/firewall/`, full-host lockdowns that reset ufw and deny all in/out: add SSH and P2P rules first).
 * Treat `--state-dir/ingest-token` as secret; `manifest.json` and `config.alloy` hold no secret.
-* Uninstall cleanly: `sudo packaging/uninstall.sh`.
+* Uninstall cleanly: `sudo packaging/uninstall.sh --all`.
