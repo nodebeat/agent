@@ -1,11 +1,11 @@
 # Release pipeline for the nodebeat-agent.
 #
 # Local validation:  `goreleaser check` and `goreleaser build --snapshot --clean`
-# Real releases run in CI from a version tag:
-#   git tag v0.1.0 && git push origin v0.1.0
-# which needs GITHUB_TOKEN. Signing is keyless (Sigstore Fulcio/Rekor via the
-# CI job's OIDC identity); SLSA provenance comes from
-# slsa-framework/slsa-github-generator once CI exists.
+# Real releases run in CI (.github/workflows/release.yml) from a version tag:
+#   git tag -a v0.1.0 -m v0.1.0 && git push origin v0.1.0
+# Signing is keyless (Sigstore Fulcio/Rekor via the workflow's OIDC
+# identity); the workflow adds SLSA build provenance
+# (actions/attest-build-provenance) after this config runs.
 #
 # Each archive also carries our portable build of cosmos-validator-watcher
 # (scripts/release/build-watcher.sh, needs Docker). Alloy is not shipped:
