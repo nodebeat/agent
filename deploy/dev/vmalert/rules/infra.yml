@@ -3,34 +3,48 @@
 # All rules carry duration guards except the staleness backstop
 # (NodeTelemetryStale, for: 0s — absence has no duration to guard). Only
 # NodeDiskCritical pages (severity critical); the rest are warnings.
+#
+# Disk rules watch every writable local filesystem, not only "/": stakers
+# often keep chaindata on a separate mount. Skipped: memory and image
+# filesystems (tmpfs, ramfs, overlay, squashfs; the exporter keeps tmpfs
+# such as /run and /tmp), network and FUSE mounts (someone else's space; a
+# full NAS share must not page), read-only mounts and /boot (kernel churn,
+# never chaindata). One alert per mountpoint, so a bind mount of a full disk
+# alerts once per mountpoint.
 groups:
   - name: infra
     interval: 30s
     rules:
       - alert: NodeDiskLow
         expr: |
-          node_filesystem_avail_bytes{mountpoint="/"}
-            / node_filesystem_size_bytes{mountpoint="/"} < 0.15
+          (
+            node_filesystem_avail_bytes{fstype!~"tmpfs|ramfs|overlay|squashfs|nfs.*|cifs|smb.*|fuse.*", mountpoint!~"/boot(/.*)?"}
+              / node_filesystem_size_bytes
+          ) < 0.15
+          and on (instance, device, mountpoint) node_filesystem_readonly == 0
         for: 5m
         labels:
           severity: warning
           component: infra
         annotations:
-          summary: "Root disk below 15% free ({{ $labels.instance }}, {{ $value }} fraction left)"
+          summary: "Disk {{ $labels.mountpoint }} below 15% free ({{ $labels.instance }}, {{ $value | humanizePercentage }} left)"
           description: >-
             A full disk mid-sync corrupts chaindata and forces a multi-day
             resync. Free space now: prune, move chaindata, or grow the disk.
 
       - alert: NodeDiskCritical
         expr: |
-          node_filesystem_avail_bytes{mountpoint="/"}
-            / node_filesystem_size_bytes{mountpoint="/"} < 0.05
+          (
+            node_filesystem_avail_bytes{fstype!~"tmpfs|ramfs|overlay|squashfs|nfs.*|cifs|smb.*|fuse.*", mountpoint!~"/boot(/.*)?"}
+              / node_filesystem_size_bytes
+          ) < 0.05
+          and on (instance, device, mountpoint) node_filesystem_readonly == 0
         for: 1m
         labels:
           severity: critical
           component: infra
         annotations:
-          summary: "Root disk below 5% free ({{ $labels.instance }}, {{ $value }} fraction left)"
+          summary: "Disk {{ $labels.mountpoint }} below 5% free ({{ $labels.instance }}, {{ $value | humanizePercentage }} left)"
           description: >-
             Disk-full is imminent: the EL/CL database can corrupt on the next
             write burst. Free space immediately (prune, delete old logs or

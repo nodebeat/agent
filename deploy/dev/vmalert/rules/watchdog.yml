@@ -1,6 +1,8 @@
-# Always-firing signal proving rule evaluation is alive. Routed to the "null"
-# receiver so it never pages. Standard Prometheus "watchdog" pattern; useful for
-# catching a silently dead evaluator.
+# Always-firing signal proving rule evaluation is alive. Standard Prometheus
+# "watchdog" pattern; it never pages a customer channel. On SaaS, with
+# WATCHDOG_PING set, the merged Alertmanager config posts it to that external
+# dead-man switch every minute (one group across all tenants); dev routes it
+# to "null".
 groups:
   - name: watchdog
     interval: 30s

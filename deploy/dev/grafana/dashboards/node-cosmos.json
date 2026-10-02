@@ -644,7 +644,7 @@
     {
       "id": 32,
       "type": "timeseries",
-      "title": "Root disk free",
+      "title": "Disk free (per mount)",
       "datasource": {
         "type": "prometheus",
         "uid": "victoriametrics"
@@ -661,9 +661,9 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "node_filesystem_avail_bytes{instance=\"$instance\",mountpoint=\"/\"} / node_filesystem_size_bytes{instance=\"$instance\",mountpoint=\"/\"}",
+          "expr": "node_filesystem_avail_bytes{instance=\"$instance\",fstype!~\"tmpfs|ramfs|overlay|squashfs|nfs.*|cifs|smb.*|fuse.*\",mountpoint!~\"/boot(/.*)?\"} / node_filesystem_size_bytes",
           "refId": "A",
-          "legendFormat": "free"
+          "legendFormat": "{{mountpoint}}"
         }
       ],
       "fieldConfig": {

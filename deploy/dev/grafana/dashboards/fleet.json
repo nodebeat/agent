@@ -340,7 +340,7 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "min by (instance) (100 * node_filesystem_avail_bytes{mountpoint=\"/\"} / node_filesystem_size_bytes{mountpoint=\"/\"})",
+          "expr": "min by (instance) (100 * node_filesystem_avail_bytes{fstype!~\"tmpfs|ramfs|overlay|squashfs|nfs.*|cifs|smb.*|fuse.*\",mountpoint!~\"/boot(/.*)?\"} / node_filesystem_size_bytes)",
           "refId": "H",
           "format": "table",
           "instant": true,
