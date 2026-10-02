@@ -53,7 +53,7 @@ internal/alloycfg/    # Alloy pipeline renderer (hot 5s, poller 1s / standard 15
 internal/enroll/      # SaaS enrollment client + ingest-token file (0600)
 internal/supervise/   # child-process supervisor
 internal/version/     # build-time version stamp
-deploy/dev/vmalert/rules/        # alert rules (hot + standard + infra)
+deploy/rules/                    # alert rules (hot + standard + infra)
 deploy/dev/grafana/dashboards/   # fleet dashboard
 packaging/            # systemd unit, install/uninstall, firewall allowlists
 docs/THREAT_MODEL.md  # what the agent can and cannot do
