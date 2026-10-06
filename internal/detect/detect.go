@@ -182,6 +182,33 @@ func CleanVersion(v string) string {
 	return out
 }
 
+// expectedKinds are the endpoint kinds a fully detected node of each chain
+// exposes.
+var expectedKinds = map[string][]string{
+	ChainEthereum: {KindELRPC, KindCLBeacon, KindELMetrics, KindCLMetrics},
+	ChainCosmos:   {KindCosmosRPC, KindCosmosMetrics, KindCosmosREST},
+}
+
+// Missing lists the endpoint kinds a full detection of r's chain has and r
+// lacks: a client that was down or still starting when probed (a beacon
+// node checkpoint-syncing answers nothing for minutes), or a port that is
+// not published on the target (Docker setups such as Rocket Pool's
+// Smartnode keep metrics on their own network). Metrics of a client we
+// cannot identify are never found, so they stay missing.
+func (r *Result) Missing() []string {
+	have := map[string]bool{}
+	for _, e := range r.Endpoints {
+		have[e.Kind] = true
+	}
+	var out []string
+	for _, k := range expectedKinds[r.Chain] {
+		if !have[k] {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
 // MetricsURLs returns the endpoint URLs of the given kind.
 func (r *Result) MetricsURLs(kind string) []string {
 	var out []string
@@ -246,8 +273,10 @@ func Detect(ctx context.Context, target string, ports Ports, chain string) (*Res
 	}
 	res := &Result{Target: target}
 	add := func(kind, u string) { res.Endpoints = append(res.Endpoints, Endpoint{Kind: kind, URL: u}) }
+	var probed []string // for the nothing-detected error
 
 	if chain == "" || chain == ChainEthereum {
+		probed = append(probed, fmt.Sprintf("EL JSON-RPC :%d", ports.ELRPC), fmt.Sprintf("Beacon API :%d", ports.Beacon))
 		rpcURL := base(ports.ELRPC)
 		var el struct {
 			Result string `json:"result"`
@@ -285,6 +314,7 @@ func Detect(ctx context.Context, target string, ports Ports, chain string) (*Res
 	}
 
 	if chain == "" || chain == ChainCosmos {
+		probed = append(probed, fmt.Sprintf("CometBFT RPC :%d", ports.CosmosRPC))
 		rpcURL := base(ports.CosmosRPC)
 		var status struct {
 			Result struct {
@@ -314,7 +344,10 @@ func Detect(ctx context.Context, target string, ports Ports, chain string) (*Res
 	}
 
 	if len(res.Endpoints) == 0 {
-		return nil, fmt.Errorf("no ethereum or cosmos endpoint detected on %s", target)
+		return nil, fmt.Errorf("no ethereum or cosmos endpoint detected on %s (probed %s): is the client running, "+
+			"and is its RPC/API port published on this host? Docker setups such as Rocket Pool's Smartnode keep "+
+			"them closed by default; pass --el-rpc-port/--beacon-port for non-standard ports",
+			target, strings.Join(probed, ", "))
 	}
 	return res, nil
 }

@@ -3,6 +3,7 @@ package detect
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -346,10 +347,43 @@ func TestDetectChainFilter(t *testing.T) {
 }
 
 func TestDetectNothing(t *testing.T) {
+	el, beacon, cosmos := freePort(t), freePort(t), freePort(t)
 	_, err := Detect(context.Background(), "127.0.0.1",
-		Ports{ELRPC: freePort(t), Beacon: freePort(t), CosmosRPC: freePort(t)}, "")
+		Ports{ELRPC: el, Beacon: beacon, CosmosRPC: cosmos}, "")
 	if err == nil {
-		t.Error("expected error when nothing is detected, got nil")
+		t.Fatal("expected error when nothing is detected, got nil")
+	}
+	// The operator sees this at install: name what was probed and the
+	// usual cause (a Docker stack that does not publish the ports).
+	for _, want := range []string{
+		fmt.Sprintf("EL JSON-RPC :%d", el), fmt.Sprintf("Beacon API :%d", beacon),
+		fmt.Sprintf("CometBFT RPC :%d", cosmos), "Smartnode",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should mention %q", err, want)
+		}
+	}
+	_, err = Detect(context.Background(), "127.0.0.1", Ports{ELRPC: el, Beacon: beacon}, ChainEthereum)
+	if err == nil || strings.Contains(err.Error(), "CometBFT") {
+		t.Errorf("ethereum-only error should not list the cosmos probe: %v", err)
+	}
+}
+
+func TestResultMissing(t *testing.T) {
+	for _, tc := range []struct {
+		res  Result
+		want string
+	}{
+		{Result{Chain: ChainEthereum, Endpoints: []Endpoint{{Kind: KindELRPC}, {Kind: KindELMetrics}}},
+			KindCLBeacon + "," + KindCLMetrics},
+		{Result{Chain: ChainEthereum, Endpoints: []Endpoint{{Kind: KindELRPC}, {Kind: KindELMetrics},
+			{Kind: KindCLBeacon}, {Kind: KindCLMetrics}}}, ""},
+		{Result{Chain: ChainCosmos, Endpoints: []Endpoint{{Kind: KindCosmosRPC}}},
+			KindCosmosMetrics + "," + KindCosmosREST},
+	} {
+		if got := strings.Join(tc.res.Missing(), ","); got != tc.want {
+			t.Errorf("Missing(%v) = %q, want %q", tc.res.Endpoints, got, tc.want)
+		}
 	}
 }
 

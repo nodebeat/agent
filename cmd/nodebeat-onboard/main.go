@@ -85,6 +85,12 @@ func main() {
 	} else {
 		fmt.Printf("  [%s] PASS - chain=%s el=%s cl=%s endpoints=%d\n",
 			label, det.Chain, det.ELClient, det.CLClient, len(det.Endpoints))
+		// Not a failure (an RPC node has no beacon, metrics are optional),
+		// but say so: the agent keeps probing for them.
+		if missing := det.Missing(); len(missing) > 0 {
+			fmt.Printf("  [%s] NOTE - not found: %s (the agent keeps probing; see the user guide for published ports)\n",
+				label, strings.Join(missing, ", "))
+		}
 	}
 
 	fmt.Println()

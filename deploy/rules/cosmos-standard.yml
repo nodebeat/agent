@@ -5,22 +5,6 @@ groups:
   - name: cosmos-standard
     interval: 30s
     rules:
-      # Per validator, like CosmosValidatorJailed (address = hex consensus
-      # address from the watcher).
-      - alert: CosmosMissedBlocksHigh
-        expr: max by (instance, address) (cosmos_validator_watcher_consecutive_missed_blocks) > 5
-        for: 5m
-        labels:
-          severity: warning
-          component: consensus
-          chain: cosmos
-        annotations:
-          summary: "Validator {{ $labels.address }} missing blocks for 5m ({{ $labels.instance }}, {{ $value }} consecutive)"
-          description: >-
-            More than 5 consecutive missed blocks sustained 5 minutes. A
-            growing streak precedes downtime-jailing. Check app liveness,
-            peers, and clock sync before the signing window fills.
-
       - alert: CosmosVotingPowerDrop
         expr: |
           max by (instance, address) (

@@ -36,6 +36,72 @@ groups:
             nothing and risks tombstoning on further faults. Check downtime,
             double-sign evidence, and unjail only after the cause is fixed.
 
+      # A validator that stopped signing (spec §2.1 E hot path, US-1.17).
+      # 10 consecutive blocks: a healthy validator misses about 1% at
+      # random, so 10 in a row by chance is ~1e-20; ~1 min on 6s-block
+      # chains (Hub, Celestia), ~10-20s on 1-2s chains (Osmosis, dYdX), where
+      # a validator restart also pages. Downtime jailing is usually hours
+      # away (Hub: ~9,500 misses in a 10,000-block window), so this is the
+      # page that leaves time to act. Once jailed the watcher freezes the
+      # streak; CosmosValidatorJailed takes over and this one resolves.
+      - alert: CosmosMissedBlocksHigh
+        expr: |
+          (max by (instance, address) (cosmos_validator_watcher_consecutive_missed_blocks) >= 10)
+            unless on (instance, address)
+          (max by (instance, address) (cosmos_validator_watcher_is_jailed) == 1)
+        for: 0s
+        labels:
+          severity: critical
+          component: consensus
+          chain: cosmos
+        annotations:
+          summary: "Validator {{ $labels.address }} stopped signing: {{ $value }} consecutive missed blocks ({{ $labels.instance }})"
+          description: >-
+            At least 10 consecutive missed blocks. The validator is not
+            signing: check that the node and its signer (or remote signer)
+            are up, synced and peered, and the clock is in sync, before
+            the slashing window jails it.
+
+      # Dead or hung CometBFT, the Cosmos counterpart of
+      # EthereumConsensusUnhealthy: one failed scrape of its native :26660
+      # endpoint (Alloy's up; the agent scrapes it at 2s with a 2s timeout,
+      # alloycfg.CometBFTInterval) pages, as one failed Ethereum poll does:
+      # 7.7-8.7s pause→Alertmanager on staging (2026-10-03). Needs instrumentation.prometheus = true in the
+      # node's config.toml; without the target, CosmosHeadStalled (~70s)
+      # is what pages. The watcher cannot tell: it keeps serving its last
+      # heights and node_synced=1 while the RPC is unreachable (lab,
+      # 2026-10-03).
+      - alert: CosmosNodeDown
+        expr: max by (instance) (up{chain="cosmos", role="consensus"}) == 0
+        for: 0s
+        labels:
+          severity: critical
+          component: consensus
+          chain: cosmos
+        annotations:
+          summary: "CometBFT not answering ({{ $labels.instance }})"
+          description: >-
+            The node's metrics endpoint did not answer the last scrape: the
+            process is down, hung or out of resources. A validator on this
+            node is not signing while it stays that way.
+
+      # Out of sync, the counterpart of EthereumCLSyncing: the watcher's
+      # node_synced mirrors CometBFT's catching_up (block sync or state
+      # sync), read over RPC, so it works without :26660.
+      - alert: CosmosNodeSyncing
+        expr: max by (instance) (cosmos_validator_watcher_node_synced) == 0
+        for: 0s
+        labels:
+          severity: critical
+          component: consensus
+          chain: cosmos
+        annotations:
+          summary: "CometBFT is catching up ({{ $labels.instance }})"
+          description: >-
+            The node reports catching_up: it is block- or state-syncing and
+            not following the chain head. A validator here cannot sign until
+            it is synced.
+
       # Detection budget ≈ window (60s) + backend (~9s): ~70s fault-to-page,
       # same design as the Ethereum head-stall rules.
       # The watcher's height is the signal that survives a hung node: its

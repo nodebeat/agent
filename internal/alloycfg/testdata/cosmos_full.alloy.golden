@@ -21,7 +21,7 @@ prometheus.remote_write "default" {
 prometheus.scrape "hot" {
 	targets = [
 		{ __address__ = "127.0.0.1:9090", __scheme__ = "http", __metrics_path__ = "/metrics", chain = "cosmos", instance = "node3.example", role = "duties" },
-		{ __address__ = "node3.example:26660", __scheme__ = "http", __metrics_path__ = "/metrics", chain = "cosmos", instance = "node3.example", role = "consensus" },
+		{ __address__ = "node3.example:26660", __scheme__ = "http", __metrics_path__ = "/metrics", __scrape_interval__ = "2s", __scrape_timeout__ = "2s", chain = "cosmos", instance = "node3.example", role = "consensus" },
 	]
 	forward_to      = [prometheus.remote_write.default.receiver]
 	scrape_interval = "5s"

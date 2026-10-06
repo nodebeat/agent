@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -638,4 +639,142 @@ func TestStateDirMadeAbsolute(t *testing.T) {
 	if !filepath.IsAbs(r.ConfigPath()) {
 		t.Errorf("config path %q is relative; Alloy runs with the state dir as cwd", r.ConfigPath())
 	}
+}
+
+// mergeDetection only ever adds endpoints: a client that is down at the
+// next probe stays in the pipeline, so its health series report it.
+func TestMergeDetection(t *testing.T) {
+	elOnly := fullFixture()
+	elOnly.CLClient = ""
+	elOnly.Endpoints = elOnly.Endpoints[:2] // el-rpc, el-metrics
+
+	merged, added := mergeDetection(elOnly, fullFixture())
+	if strings.Join(added, ",") != detect.KindCLBeacon+","+detect.KindCLMetrics {
+		t.Errorf("added = %v, want the CL endpoints", added)
+	}
+	if merged.CLClient != "lighthouse" || len(merged.Endpoints) != 4 {
+		t.Errorf("merged = %+v, want all four endpoints and cl_client", merged)
+	}
+	if len(elOnly.Endpoints) != 2 || elOnly.CLClient != "" {
+		t.Errorf("prev mutated: %+v", elOnly)
+	}
+
+	// The CL went away again: nothing is dropped.
+	kept, added := mergeDetection(merged, elOnly)
+	if kept != merged || len(added) != 0 {
+		t.Errorf("merge with fewer endpoints changed the detection: %+v (added %v)", kept, added)
+	}
+
+	cosmos := &detect.Result{Target: "node9.example", Chain: detect.ChainCosmos,
+		Endpoints: []detect.Endpoint{{Kind: detect.KindCosmosRPC, URL: "http://node9.example:26657"}}}
+	if same, added := mergeDetection(elOnly, cosmos); same != elOnly || len(added) != 0 {
+		t.Errorf("merged a different chain: %+v (added %v)", same, added)
+	}
+}
+
+// A beacon node that does not answer when the agent starts (checkpoint
+// sync after a restart takes minutes) is picked up by rediscovery without
+// restarting Alloy, and stays polled when it dies again.
+func TestRediscoverAddsLateBeacon(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ARGS_LOG", filepath.Join(dir, "args.log"))
+	alloyBin := fakeBin(t, t.TempDir(), "alloy.sh", true)
+
+	el := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/debug/metrics/prometheus" {
+			io.WriteString(w, "test_metric 1\n")
+			return
+		}
+		io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":"Geth/v1.17.7-stable/linux-amd64/go1.27.1"}`)
+	}))
+	defer el.Close()
+	var up atomic.Bool
+	cl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !up.Load() {
+			http.Error(w, "starting", http.StatusServiceUnavailable)
+			return
+		}
+		switch r.URL.Path {
+		case "/eth/v1/node/version":
+			io.WriteString(w, `{"data":{"version":"Lighthouse/v8.2.3/x86_64-linux"}}`)
+		case "/metrics":
+			io.WriteString(w, "test_metric 1\n")
+		case "/eth/v1/node/syncing":
+			io.WriteString(w, `{"data":{"head_slot":"4242","sync_distance":"0","is_syncing":false}}`)
+		case "/eth/v1/node/peer_count":
+			io.WriteString(w, `{"data":{"connected":"7","connecting":"0","disconnected":"0","disconnecting":"0"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer cl.Close()
+	elPort, clPort := portOf(t, el.URL), portOf(t, cl.URL)
+
+	metricsPort := freePort(t)
+	r := New(Config{
+		Target:          "127.0.0.1",
+		Chain:           detect.ChainEthereum,
+		Ports:           detect.Ports{ELRPC: elPort, ELMetrics: elPort, Beacon: clPort, CLMetrics: clPort},
+		RemoteWriteURL:  "https://ingest:8428/api/v1/write",
+		AlloyBin:        alloyBin,
+		StateDir:        dir,
+		MetricsAddr:     "127.0.0.1:" + itoa(metricsPort),
+		RediscoverEvery: 20 * time.Millisecond,
+	}, testLogger())
+	if err := r.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(r.Detection().Missing(), ","); got != detect.KindCLBeacon+","+detect.KindCLMetrics {
+		t.Fatalf("missing at start = %q, want the CL endpoints", got)
+	}
+	stop := runUntilCancel(t, r)
+	defer stop()
+	waitFor(t, 5*time.Second, "alloy running", func() bool {
+		st := r.ChildrenStats()
+		return len(st) == 1 && st[0].Running
+	})
+
+	up.Store(true)
+	waitFor(t, 5*time.Second, "beacon rediscovered", func() bool {
+		return len(r.Detection().Missing()) == 0
+	})
+	if cfg := readFile(t, r.ConfigPath()); !strings.Contains(cfg, "127.0.0.1:"+itoa(clPort)) {
+		t.Errorf("config should scrape the rediscovered CL metrics:\n%s", cfg)
+	}
+	base := "http://127.0.0.1:" + itoa(metricsPort)
+	waitFor(t, 5*time.Second, "beacon polled", func() bool {
+		b, err := tryGet(base + ChainMetricsPath)
+		return err == nil && strings.Contains(b, `eth_con_health_up{module="health",node="consensus"} 1`)
+	})
+	if b, err := tryGet(base + "/metrics"); err != nil || !strings.Contains(b, `cl_client="lighthouse"`) {
+		t.Errorf("nodebeat_agent_info should name the rediscovered CL: %v\n%s", err, b)
+	}
+
+	// The beacon dies again: it stays in the pipeline and reports down.
+	up.Store(false)
+	waitFor(t, 5*time.Second, "beacon reported down", func() bool {
+		b, err := tryGet(base + ChainMetricsPath)
+		return err == nil && strings.Contains(b, `eth_con_health_up{module="health",node="consensus"} 0`)
+	})
+	if missing := r.Detection().Missing(); len(missing) != 0 {
+		t.Errorf("a dead beacon was dropped from the detection: missing %v", missing)
+	}
+	for _, st := range r.ChildrenStats() {
+		if st.Restarts != 0 {
+			t.Errorf("%s restarted %d times; rediscovery must reload, not restart", st.Name, st.Restarts)
+		}
+	}
+}
+
+func portOf(t *testing.T, u string) int {
+	t.Helper()
+	_, p, err := net.SplitHostPort(strings.TrimPrefix(u, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := strconv.Atoi(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
 }

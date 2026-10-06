@@ -63,10 +63,18 @@ const defaultExporterMetricsURL = "http://127.0.0.1:9090/metrics"
 // target only (per-target __scrape_interval__, so the job label and series
 // identity stay the same): its ~25 series are what the fastest pages read,
 // while the ~10k native CL series on the same job stay at 5s.
+//
+// CometBFTInterval does the same for CometBFT's native :26660 target
+// (~100 series): one failed scrape of it pages CosmosNodeDown, so its
+// timeout bounds how fast a hung node pages. At the 5s/4s hot defaults that
+// took 12-16s to Alertmanager (staging, 2026-10-03). 2s, not the poller's
+// 1s: this endpoint is the node itself, and a 1s timeout on a busy node
+// would page on a slow scrape.
 const (
 	HotInterval       = "5s"
 	HotTimeout        = "4s"
 	ChainPollInterval = "1s"
+	CometBFTInterval  = "2s"
 	StandardInterval  = "15s"
 	NodeInterval      = "15s"
 )
@@ -187,9 +195,13 @@ func Render(det *detect.Result, opts Options) (string, error) {
 			}
 		}
 	case detect.ChainCosmos:
-		// CometBFT metrics are consensus-critical: hot path.
+		// CometBFT metrics are consensus-critical: hot path, scraped at
+		// CometBFTInterval.
 		for _, u := range det.MetricsURLs(detect.KindCosmosMetrics) {
-			if err := add(&p.Hot, "CometBFT metrics", u, withRole("consensus")); err != nil {
+			if err := add(&p.Hot, "CometBFT metrics", u, withRole("consensus",
+				label{Key: "__scrape_interval__", Value: CometBFTInterval},
+				label{Key: "__scrape_timeout__", Value: CometBFTInterval},
+			)); err != nil {
 				return "", err
 			}
 		}

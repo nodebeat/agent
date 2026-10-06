@@ -86,6 +86,9 @@ type Config struct {
 	// detection is known; see NormalizeValidators.
 	Validators    []string
 	SuperviseOpts supervise.Options
+	// RediscoverEvery is how often a started agent re-probes the target
+	// while an expected endpoint is missing (default 30s; see rediscover).
+	RediscoverEvery time.Duration
 }
 
 func (c Config) withDefaults() Config {
@@ -113,6 +116,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.Instance == "" {
 		c.Instance = c.Target
+	}
+	if c.RediscoverEvery == 0 {
+		c.RediscoverEvery = 30 * time.Second
 	}
 	return c
 }
@@ -196,6 +202,9 @@ type Runner struct {
 	log *log.Logger
 	// writeMu serializes apply, the only writer of the pipeline files.
 	writeMu sync.Mutex
+	// detMu serializes the detection updates (Reload, rediscover and
+	// SetInstance's re-render), so none re-applies a stale detection.
+	detMu sync.Mutex
 	// mu guards instance, det, children, manifest, sup and the poller
 	// fields: Reload (SIGHUP goroutine) and SetInstance (enrolled heartbeat
 	// loop) race with Start and the diagnostics server. Take the lock for
@@ -208,6 +217,7 @@ type Runner struct {
 	manifest Manifest
 	sup      *supervise.Supervisor
 	registry *prometheus.Registry
+	info     *prometheus.GaugeVec // nodebeat_agent_info, relabeled on reloads
 	// poller serves ChainMetricsPath (Ethereum only); pollCancel stops it
 	// and runCtx is Start's context, so reloads can replace the poller.
 	poller     *ethpoll.Poller
@@ -396,6 +406,8 @@ func (r *Runner) Reload(ctx context.Context) error {
 	if sup == nil {
 		return fmt.Errorf("reload before start")
 	}
+	r.detMu.Lock()
+	defer r.detMu.Unlock()
 	det, err := r.detect(ctx)
 	if err != nil {
 		return err
@@ -421,12 +433,90 @@ func (r *Runner) applyDetection(det *detect.Result) error {
 	if det.Chain == detect.ChainEthereum && !sameEndpoints(prev, det) {
 		r.startPoller(det)
 	}
+	r.setInfo(det)
 	return r.reloadAlloy(changed)
+}
+
+// rediscover re-probes the target every RediscoverEvery while an expected
+// endpoint is missing and adds what it finds (mergeDetection). Detection
+// otherwise runs only at start and on SIGHUP, so a client that was not
+// answering then (a beacon node checkpoint-syncing for minutes after a
+// restart) would go unwatched until the agent restarted. It idles while
+// nothing is missing (a SIGHUP reload may drop an endpoint again);
+// endpoints that never appear (unpublished metrics ports) cost one refused
+// connect per round.
+func (r *Runner) rediscover(ctx context.Context) {
+	t := time.NewTicker(r.cfg.RediscoverEvery)
+	defer t.Stop()
+	logged := ""
+	for {
+		det := r.Detection()
+		missing := det.Missing()
+		if m := strings.Join(missing, ", "); m != logged {
+			if m != "" {
+				r.log.Printf("agent: not detected on %s: %s; probing again every %s", det.Target, m, r.cfg.RediscoverEvery)
+			}
+			logged = m
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if len(missing) == 0 {
+			continue
+		}
+		next, err := r.detect(ctx)
+		if err != nil {
+			continue
+		}
+		r.detMu.Lock()
+		merged, added := mergeDetection(r.Detection(), next)
+		if len(added) > 0 {
+			r.log.Printf("agent: detected %s on %s", strings.Join(added, ", "), det.Target)
+			if err := r.applyDetection(merged); err != nil {
+				r.log.Printf("agent: applying rediscovered endpoints: %v", err)
+			}
+		}
+		r.detMu.Unlock()
+	}
+}
+
+// mergeDetection returns prev plus next's endpoints of the kinds prev
+// lacks (with that client's identity), and the kinds added. It never drops
+// an endpoint: a client that went down after it was found must stay polled,
+// so its health series report the outage instead of vanishing. A different
+// chain is not merged (applyDetection would refuse it anyway).
+func mergeDetection(prev, next *detect.Result) (*detect.Result, []string) {
+	if prev == nil || next == nil || next.Chain != prev.Chain {
+		return prev, nil
+	}
+	m := *prev
+	m.Endpoints = append([]detect.Endpoint(nil), prev.Endpoints...)
+	var added []string
+	for _, e := range next.Endpoints {
+		if firstURL(&m, e.Kind) == "" {
+			m.Endpoints = append(m.Endpoints, e)
+			added = append(added, e.Kind)
+		}
+	}
+	if len(added) == 0 {
+		return prev, nil
+	}
+	if firstURL(prev, detect.KindELRPC) == "" && firstURL(next, detect.KindELRPC) != "" {
+		m.ELClient, m.ELVersion = next.ELClient, next.ELVersion
+	}
+	if firstURL(prev, detect.KindCLBeacon) == "" && firstURL(next, detect.KindCLBeacon) != "" {
+		m.CLClient, m.CLVersion = next.CLClient, next.CLVersion
+	}
+	return &m, added
 }
 
 // SetInstance changes the instance label (an enrolled node renamed in the
 // portal) and reloads Alloy when the pipeline changed.
 func (r *Runner) SetInstance(name string) error {
+	r.detMu.Lock() // re-applies det: must not undo a concurrent rediscovery
+	defer r.detMu.Unlock()
 	r.mu.Lock()
 	same := name == "" || name == r.instance
 	if !same {
@@ -479,8 +569,11 @@ func (r *Runner) Start(ctx context.Context) error {
 		Name: "nodebeat_agent_info",
 		Help: "Agent identity and detected clients.",
 	}, []string{"version", "target", "chain", "el_client", "cl_client"})
-	info.WithLabelValues(version.Version, det.Target, det.Chain, det.ELClient, det.CLClient).Set(1)
 	r.registry.MustRegister(info)
+	r.mu.Lock()
+	r.info = info
+	r.mu.Unlock()
+	r.setInfo(det)
 	up := prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "nodebeat_agent_up",
 		Help: "1 while the agent supervisor is running.",
@@ -495,6 +588,7 @@ func (r *Runner) Start(ctx context.Context) error {
 	if det.Chain == detect.ChainEthereum {
 		r.startPoller(det)
 	}
+	go r.rediscover(ctx)
 
 	// pollerHandler serves one of the current poller's handlers (the poller
 	// is replaced on reloads), or 404 when there is none.
@@ -556,6 +650,18 @@ func (r *Runner) startPoller(det *detect.Result) {
 	r.poller, r.pollCancel = p, cancel
 	r.mu.Unlock()
 	go p.Run(ctx)
+}
+
+// setInfo labels nodebeat_agent_info with det's clients (no-op before Start).
+func (r *Runner) setInfo(det *detect.Result) {
+	r.mu.RLock()
+	info := r.info
+	r.mu.RUnlock()
+	if info == nil {
+		return
+	}
+	info.Reset()
+	info.WithLabelValues(version.Version, det.Target, det.Chain, det.ELClient, det.CLClient).Set(1)
 }
 
 func sameEndpoints(a, b *detect.Result) bool {
