@@ -13,11 +13,13 @@ import (
 	"time"
 
 	"github.com/nodebeat/agent/internal/detect"
+	"github.com/nodebeat/agent/internal/ethpoll"
 )
 
 // Pre-flight checks for a node host. Everything here is read-only: statfs,
 // `systemctl is-active` + the time daemon's status command, TCP connects to
-// the P2P ports, a DNS lookup, and the same read-only probes as `detect`.
+// the P2P ports, a DNS lookup, the same read-only probes as `detect`, and,
+// with --validators, one round of the agent's read-only duty calls.
 func main() {
 	var (
 		target         = flag.String("target", "127.0.0.1", "target host to check")
@@ -29,6 +31,7 @@ func main() {
 		checkStaticIP  = flag.Bool("check-static-ip", true, "check target resolves to a routable (non-loopback) IP")
 		chainFlag      = flag.String("chain", "ethereum", "chain type: ethereum or cosmos")
 		nonInteractive = flag.Bool("non-interactive", false, "exit with code 1 on any failure")
+		validators     = flag.String("validators", "", "Ethereum validators the agent will track (indices or 0x pubkeys, comma-separated): checks the beacon node answers their duty calls")
 	)
 	var ports detect.Ports
 	detect.BindPortFlags(flag.CommandLine, &ports)
@@ -91,6 +94,15 @@ func main() {
 			fmt.Printf("  [%s] NOTE - not found: %s (the agent keeps probing; see the user guide for published ports)\n",
 				label, strings.Join(missing, ", "))
 		}
+		if chain == detect.ChainEthereum && *validators != "" {
+			if ok, msg := CheckDuties(det, *validators); ok {
+				fmt.Printf("  [duties] PASS - %s\n", msg)
+				passed++
+			} else {
+				fmt.Printf("  [duties] FAIL - %s\n", msg)
+				failed++
+			}
+		}
 	}
 
 	fmt.Println()
@@ -98,6 +110,36 @@ func main() {
 	if *nonInteractive && failed > 0 {
 		os.Exit(1)
 	}
+}
+
+// CheckDuties makes the agent's per-epoch duty calls once for the listed
+// validators, so a beacon node that refuses one (Teku without liveness
+// tracking) fails here instead of leaving duty alerts blind.
+func CheckDuties(det *detect.Result, raw string) (bool, string) {
+	var ids []string
+	for _, v := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ' ' }) {
+		id, err := ethpoll.ParseValidator(v)
+		if err != nil {
+			return false, fmt.Sprintf("validator %q: %v", v, err)
+		}
+		ids = append(ids, id)
+	}
+	beacon := ""
+	for _, e := range det.Endpoints {
+		if e.Kind == detect.KindCLBeacon {
+			beacon = e.URL
+			break
+		}
+	}
+	if beacon == "" {
+		return false, "validators listed but no beacon node found: duty alerts need its Beacon API"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := ethpoll.CheckDuties(ctx, ethpoll.Config{BeaconURL: beacon, Validators: ids}); err != nil {
+		return false, err.Error()
+	}
+	return true, fmt.Sprintf("%d validators: states, proposer duties and liveness answered", len(ids))
 }
 
 // isLocal reports whether target is this host. Disk and NTP checks always

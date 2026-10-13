@@ -1,10 +1,12 @@
 package ethpoll
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,6 +25,7 @@ type fakeChain struct {
 	earned    map[string]int64  // index -> head+target+source actual (split evenly)
 	idealZero bool              // inactivity leak
 	noRewards bool              // client without the rewards API
+	noLive    bool              // Teku without --beacon-liveness-tracking-enabled
 	calls     []string
 }
 
@@ -73,6 +76,11 @@ func (f *fakeChain) handler() http.Handler {
 			}
 			fmt.Fprintf(w, `{"dependent_root":"0x00","data":[%s]}`, strings.Join(out, ","))
 		case strings.HasPrefix(p, "/eth/v1/validator/liveness/"):
+			if f.noLive { // Teku 26.9.1's answer
+				w.WriteHeader(http.StatusBadRequest)
+				io.WriteString(w, `{"code":400,"message":"Validator liveness tracking is not enabled on this beacon node, cannot service request"}`)
+				return
+			}
 			var out []string
 			for _, id := range ids {
 				out = append(out, fmt.Sprintf(`{"index":"%s","is_live":%t}`, id, f.live[id]))
@@ -287,4 +295,59 @@ func TestLagWhileBeaconFails(t *testing.T) {
 	d.p.cfg.BeaconURL = "http://127.0.0.1:1"
 	runSlots(d, 91, 115)
 	mustHave(t, scrapeDuties(t, d), `eth_validator_duties_lag_epochs{check="liveness",`+vl+`} 3`)
+}
+
+// A node that keeps refusing a call logs it once, with the node's own
+// message and the fix, and logs the recovery once.
+func TestLivenessRefusedLoggedOnce(t *testing.T) {
+	f := &fakeChain{live: map[string]bool{"1": true}, noLive: true}
+	d := setupDuties(t, f, "1")
+	var buf bytes.Buffer
+	d.p.cfg.Log = log.New(&buf, "", 0)
+	runSlots(d, 80, 110)
+	got := buf.String()
+	if n := strings.Count(got, "liveness check failing"); n != 1 {
+		t.Fatalf("logged %d liveness failures, want 1:\n%s", n, got)
+	}
+	for _, want := range []string{"400 Bad Request: Validator liveness tracking is not enabled", "--beacon-liveness-tracking-enabled=true"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("log lacks %q:\n%s", want, got)
+		}
+	}
+	mustHave(t, scrapeDuties(t, d), `eth_validator_duties_lag_epochs{check="liveness",`+vl+`} 3`)
+
+	f.mu.Lock()
+	f.noLive = false
+	f.mu.Unlock()
+	buf.Reset()
+	runSlots(d, 111, 130)
+	if got := buf.String(); strings.Count(got, "liveness check recovered") != 1 || strings.Contains(got, "failing") {
+		t.Fatalf("after recovery, log = %q", got)
+	}
+	mustHave(t, scrapeDuties(t, d), `eth_validator_duties_lag_epochs{check="liveness",`+vl+`} 0`)
+}
+
+func TestCheckDuties(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		f       *fakeChain
+		ids     []string
+		wantErr string
+	}{
+		{"ok", &fakeChain{live: map[string]bool{"1": true}}, []string{"1", pubkey0}, ""},
+		{"teku without liveness", &fakeChain{noLive: true}, []string{"1"}, "--beacon-liveness-tracking-enabled=true"},
+		{"unknown validators", &fakeChain{}, []string{"99999"}, "knows none of the listed validators"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(c.f.handler())
+			defer srv.Close()
+			err := CheckDuties(context.Background(), Config{BeaconURL: srv.URL, Validators: c.ids})
+			switch {
+			case c.wantErr == "" && err != nil:
+				t.Fatalf("CheckDuties: %v", err)
+			case c.wantErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantErr)):
+				t.Fatalf("CheckDuties = %v, want error containing %q", err, c.wantErr)
+			}
+		})
+	}
 }

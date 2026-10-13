@@ -637,6 +637,7 @@ func (r *Runner) startPoller(det *detect.Result) {
 		BeaconURL:    firstURL(det, detect.KindCLBeacon),
 		ExecutionURL: firstURL(det, detect.KindELRPC),
 		Validators:   r.cfg.Validators,
+		Log:          r.log,
 	})
 	r.mu.Lock()
 	if r.runCtx == nil {

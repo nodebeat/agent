@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"maps"
 	"math/big"
 	"net/http"
@@ -66,6 +67,9 @@ type Config struct {
 	// Validators (indices or 0x pubkeys, see ParseValidator) turns on
 	// duty tracking; needs BeaconURL. Served by DutiesHandler.
 	Validators []string
+	// Log, if set, gets duty-check failures (once per distinct error) and
+	// recoveries; health polls are reported through the metrics only.
+	Log *log.Logger
 	// Client overrides the HTTP client (tests). It must not set Timeout:
 	// the SSE stream is long-lived; per-poll deadlines come from contexts.
 	Client *http.Client

@@ -165,8 +165,11 @@ groups:
           description: >-
             The agent could not read {{ $labels.check }} from the beacon node
             for {{ $value }} epochs, so duty alerts for this node are blind.
-            See the agent log for the failing call; a beacon node under heavy
-            load can time out on these (10s limit).
+            The agent log names the failing call and the node's answer
+            (journalctl -u nodebeat-agent | grep duties). Teku answers the
+            liveness check only when started with
+            --beacon-liveness-tracking-enabled=true; a beacon node under
+            heavy load can also time out on these (10s limit).
 
       # A listed validator the beacon node does not know is a typo or a
       # deposit not processed yet; either way it is not being monitored.

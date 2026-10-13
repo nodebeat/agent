@@ -315,13 +315,15 @@ PORT_FLAGS=(--el-rpc-port "$EL_RPC_PORT" --beacon-port "$BEACON_PORT" --el-metri
   --cosmos-rpc-port "$COSMOS_RPC_PORT" --cosmos-rest-port "$COSMOS_REST_PORT"
   --cosmos-metrics-port "$COSMOS_METRICS_PORT" --cosmos-p2p-port "$COSMOS_P2P_PORT")
 CHAIN_FLAGS=(); [ -z "$CHAIN" ] || CHAIN_FLAGS=(--chain "$CHAIN")
+# Ethereum: the pre-flight also makes the duty calls for these validators.
+VAL_FLAGS=(); [ -z "$VALIDATORS" ] || VAL_FLAGS=(--validators "$VALIDATORS")
 
 # --- 2. Pre-flight (read-only; runs in --dry-run too) ---------------------
 if [ "$SKIP_CHECKS" = 1 ]; then
   echo "pre-flight skipped (--skip-checks)"
 elif [ -x "$BINDIR/nodebeat-onboard" ]; then
-  echo "pre-flight: $BINDIR/nodebeat-onboard --target $TARGET ${CHAIN_FLAGS[*]} ${PORT_FLAGS[*]}"
-  "$BINDIR/nodebeat-onboard" --target "$TARGET" "${CHAIN_FLAGS[@]}" "${PORT_FLAGS[@]}" --non-interactive
+  echo "pre-flight: $BINDIR/nodebeat-onboard --target $TARGET ${CHAIN_FLAGS[*]} ${PORT_FLAGS[*]} ${VAL_FLAGS[*]}"
+  "$BINDIR/nodebeat-onboard" --target "$TARGET" "${CHAIN_FLAGS[@]}" "${PORT_FLAGS[@]}" "${VAL_FLAGS[@]}" --non-interactive
   echo "pre-flight passed"
 else
   echo "warning: no nodebeat-onboard next to $BIN; skipping pre-flight" >&2

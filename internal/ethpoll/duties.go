@@ -55,6 +55,8 @@ var DutyCalls = []string{
 
 var pubkeyRe = regexp.MustCompile(`^0x[0-9a-fA-F]{96}$`)
 
+var numbersRe = regexp.MustCompile(`[0-9]+`)
+
 // ParseValidator checks one validator id, an index or a 0x-prefixed BLS
 // pubkey, and returns it in canonical (lower-case) form.
 func ParseValidator(v string) (string, error) {
@@ -93,6 +95,7 @@ type duties struct {
 	// epochs the API no longer answers, these do not (lag metric).
 	doneLiveness, doneRewards uint64
 	retryAt                   map[string]time.Time
+	lastErr                   map[string]string // failing checks: logged error, numbers masked
 
 	configured, unknown, activeN, missedLast prometheus.Gauge
 	lag                                      *prometheus.GaugeVec
@@ -104,7 +107,8 @@ type duties struct {
 
 func newDuties(p *Poller, ids []string) *duties {
 	d := &duties{p: p, ids: ids, reg: prometheus.NewRegistry(),
-		vals: map[string]*validator{}, proposals: map[uint64]string{}, retryAt: map[string]time.Time{}}
+		vals: map[string]*validator{}, proposals: map[uint64]string{}, retryAt: map[string]time.Time{},
+		lastErr: map[string]string{}}
 	cl := prometheus.Labels{"module": "validator", "node": "consensus"}
 	gauge := func(name, help string) prometheus.Gauge {
 		g := prometheus.NewGauge(prometheus.GaugeOpts{Name: name, Help: help, ConstLabels: cl})
@@ -161,7 +165,11 @@ func (d *duties) run(ctx context.Context) {
 
 func (d *duties) tick(ctx context.Context, now time.Time) {
 	if d.perEpoch == 0 {
-		if !d.due("chain", now) || d.loadChain(ctx) != nil {
+		if !d.due("chain", now) {
+			return
+		}
+		if err := d.report("chain", d.loadChain(ctx)); err != nil {
+			d.failed("chain", now)
 			return
 		}
 	}
@@ -179,7 +187,7 @@ func (d *duties) tick(ctx context.Context, now time.Time) {
 		d.doneLiveness, d.doneRewards = epoch, epoch
 	}
 	if d.nextDuties <= epoch && d.due("duties", now) {
-		if d.refresh(ctx, epoch) == nil {
+		if d.report("duties", d.refresh(ctx, epoch)) == nil {
 			d.nextDuties = epoch + 1
 		} else {
 			d.failed("duties", now)
@@ -190,7 +198,7 @@ func (d *duties) tick(ctx context.Context, now time.Time) {
 		if d.nextLiveness < epoch-1 {
 			d.nextLiveness = epoch - 1
 		}
-		if d.liveness(ctx, epoch-1) == nil {
+		if d.report("liveness", d.liveness(ctx, epoch-1)) == nil {
 			d.nextLiveness, d.doneLiveness = epoch, epoch
 		} else {
 			d.failed("liveness", now)
@@ -202,15 +210,15 @@ func (d *duties) tick(ctx context.Context, now time.Time) {
 		if d.nextRewards+1 < epoch-2 {
 			d.nextRewards = epoch - 2 // missed epochs (agent down) are skipped
 		}
-		switch err := d.rewards(ctx, d.nextRewards); {
-		case err == nil:
+		err := d.rewards(ctx, d.nextRewards)
+		if errors.Is(err, errUnsupported) {
+			d.rewardsSupported.Set(0) // an answer, not a failure
+			err = nil
+		}
+		if d.report("rewards", err) == nil {
 			d.nextRewards++
 			d.doneRewards = d.nextRewards
-		case errors.Is(err, errUnsupported):
-			d.rewardsSupported.Set(0)
-			d.nextRewards++
-			d.doneRewards = d.nextRewards
-		default:
+		} else {
 			d.failed("rewards", now)
 		}
 	}
@@ -221,7 +229,7 @@ func (d *duties) tick(ctx context.Context, now time.Time) {
 			continue
 		}
 		switch ok, err := d.proposal(ctx, s, idx); {
-		case err != nil:
+		case d.report("proposal", err) != nil:
 			d.failed("proposal", now)
 		default:
 			if ok != nil {
@@ -250,6 +258,28 @@ func (d *duties) tick(ctx context.Context, now time.Time) {
 }
 
 func (d *duties) due(check string, now time.Time) bool { return !now.Before(d.retryAt[check]) }
+
+// report logs a check's failure when it starts or its error changes (other
+// than in numbers: the epoch is in the path), and its recovery, so a node
+// that keeps refusing a call logs once, not every slot. Returns err.
+func (d *duties) report(check string, err error) error {
+	prev, failing := d.lastErr[check]
+	switch {
+	case err == nil && failing:
+		delete(d.lastErr, check)
+		d.logf("duties: %s check recovered", check)
+	case err != nil && prev != numbersRe.ReplaceAllString(err.Error(), "#"):
+		d.lastErr[check] = numbersRe.ReplaceAllString(err.Error(), "#")
+		d.logf("duties: %s check failing, retrying every slot: %v", check, err)
+	}
+	return err
+}
+
+func (d *duties) logf(format string, args ...any) {
+	if d.p.cfg.Log != nil {
+		d.p.cfg.Log.Printf(format, args...)
+	}
+}
 
 func (d *duties) failed(check string, now time.Time) {
 	wait := d.slotDur
@@ -385,6 +415,10 @@ func (d *duties) liveness(ctx context.Context, epoch uint64) error {
 		} `json:"data"`
 	}
 	if err := d.post(ctx, fmt.Sprintf("/eth/v1/validator/liveness/%d", epoch), ids, &out); err != nil {
+		// Teku serves this API only when asked to (off by default).
+		if strings.Contains(err.Error(), "liveness tracking is not enabled") {
+			err = fmt.Errorf("%w (Teku: start it with --beacon-liveness-tracking-enabled=true)", err)
+		}
 		return err
 	}
 	missed := 0
@@ -535,7 +569,55 @@ func (d *duties) do(ctx context.Context, method, path string, body []byte, out a
 	case http.StatusMethodNotAllowed, http.StatusNotImplemented:
 		return fmt.Errorf("%s %s: %w", method, path, errUnsupported)
 	}
-	return fmt.Errorf("%s %s: %s", method, path, resp.Status)
+	return fmt.Errorf("%s %s: %s%s", method, path, resp.Status, beaconMessage(resp.Body))
+}
+
+// beaconMessage returns ": <message>" from a Beacon API error body
+// ({"code":400,"message":"..."}), or "" when there is none. The node is
+// not trusted: printable ASCII only, capped.
+func beaconMessage(r io.Reader) string {
+	var e struct {
+		Message string `json:"message"`
+	}
+	if json.NewDecoder(io.LimitReader(r, 4096)).Decode(&e) != nil {
+		return ""
+	}
+	b := make([]byte, 0, min(len(e.Message), 200))
+	for i := 0; i < len(e.Message) && len(b) < 200; i++ {
+		if c := e.Message[i]; c >= 0x20 && c < 0x7f {
+			b = append(b, c)
+		}
+	}
+	if len(b) == 0 {
+		return ""
+	}
+	return ": " + string(b)
+}
+
+// CheckDuties makes the per-epoch duty reads once, as the agent will for
+// cfg.Validators (pre-flight): chain parameters, validator states and
+// proposer duties, and liveness for the current epoch. The rewards call is
+// skipped (slow; a node without it is handled). Nothing is kept.
+func CheckDuties(ctx context.Context, cfg Config) error {
+	if cfg.BeaconURL == "" || len(cfg.Validators) == 0 {
+		return errors.New("needs a beacon URL and validators")
+	}
+	d := New(cfg).duties
+	if err := d.loadChain(ctx); err != nil {
+		return err
+	}
+	now := time.Now()
+	if now.Before(d.genesis) {
+		return nil
+	}
+	epoch := uint64(now.Sub(d.genesis)/d.slotDur) / d.perEpoch
+	if err := d.refresh(ctx, epoch); err != nil {
+		return err
+	}
+	if len(d.vals) == 0 {
+		return errors.New("the beacon node knows none of the listed validators (typo, or deposits not processed yet)")
+	}
+	return d.liveness(ctx, epoch)
 }
 
 // DutiesHandler serves the duty series; nil when no validators are set.

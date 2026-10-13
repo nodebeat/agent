@@ -203,3 +203,17 @@ func TestFlagParsing(t *testing.T) {
 		t.Errorf("CosmosP2P = %d, want 26656", ports.CosmosP2P)
 	}
 }
+
+// Beacon answers are covered by ethpoll's TestCheckDuties; this covers the
+// input side.
+func TestCheckDutiesInput(t *testing.T) {
+	noBeacon := &detect.Result{Endpoints: []detect.Endpoint{{Kind: detect.KindELRPC, URL: "http://127.0.0.1:8545"}}}
+	for raw, want := range map[string]string{
+		"12,nope": `validator "nope"`,
+		"12, 13":  "no beacon node found",
+	} {
+		if ok, msg := CheckDuties(noBeacon, raw); ok || !strings.Contains(msg, want) {
+			t.Errorf("CheckDuties(%q) = %v, %q; want failure containing %q", raw, ok, msg, want)
+		}
+	}
+}
